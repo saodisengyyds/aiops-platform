@@ -1,0 +1,33 @@
+# 依赖（镜像内 npm ci 安装，不从宿主机复制）
+node_modules
+
+# 版本控制
+.git
+.gitignore
+
+# 运行时数据
+data
+*.sqlite
+*.db
+*.log
+logs
+
+# 环境变量（含密码，绝不能进镜像）
+.env
+*.env
+!.env.example
+
+# 文档与部署脚本（镜像内不需要）
+*.md
+deploy.sh
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# 编辑器 / 系统
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+*.swp
+*.bak

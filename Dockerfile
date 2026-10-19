@@ -3,13 +3,14 @@
 #
 #  构建（本机架构）：
 #    docker build -t aiops:1.0.0 .
-#  构建（指定 x86_64）：
+#  使用镜像源加速：
+#    docker build --build-arg NODE_IMAGE=hub.qusiqi.eu.org/library/node:22-alpine -t aiops:1.0.0 .
+#  构建指定架构（需 QEMU 支持）：
 #    docker buildx build --platform linux/amd64 -t aiops:1.0.0 --load .
-#
-#  说明：mysql2 是纯 JS 实现（0 个 .node 原生模块），
-#       因此 node_modules 可跨架构复用，无需在目标架构上执行 npm install。
 # ============================================================
-FROM node:22-alpine
+
+ARG NODE_IMAGE=node:22-alpine
+FROM ${NODE_IMAGE}
 
 LABEL org.opencontainers.image.title="AIOps Platform" \
       org.opencontainers.image.description="智能运维管理平台（集群监控版）" \
@@ -23,9 +24,10 @@ RUN apk add --no-cache tzdata \
 
 WORKDIR /app
 
-# 依赖：直接复制预装好的 node_modules（纯 JS，跨架构安全）
+# 依赖：mysql2 为纯 JS，在目标架构上正常安装
 COPY package.json package-lock.json ./
-COPY node_modules ./node_modules
+RUN npm ci --omit=dev --no-audit --no-fund \
+    && npm cache clean --force
 
 # 应用代码
 COPY server-mysql.js ./
