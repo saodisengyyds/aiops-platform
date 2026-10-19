@@ -454,6 +454,14 @@ const DDL = [
     PRIMARY KEY (group_id, menu_key)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
+  /* 按用户的菜单可见性覆盖（优先级高于分组配置） */
+  `CREATE TABLE IF NOT EXISTS user_menu_perms (
+    user_id INT NOT NULL,
+    menu_key VARCHAR(32) NOT NULL,
+    visible TINYINT(1) DEFAULT 1,
+    PRIMARY KEY (user_id, menu_key)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
   `CREATE TABLE IF NOT EXISTS clusters (
     id INT PRIMARY KEY AUTO_INCREMENT,
     name VARCHAR(64) NOT NULL UNIQUE,
@@ -1749,14 +1757,46 @@ function publicUser(u) {
 
 /** 菜单可见性：菜单权限表 > 角色权限 > 默认 */
 async function visibleMenus(user) {
-  const [rows] = await pool.query('SELECT menu_key, visible FROM menu_perms WHERE group_id = ?', [user.group_id]);
-  const map = {};
-  rows.forEach((r) => { map[r.menu_key] = r.visible === 1; });
+  /* 三级优先级：用户级覆盖 > 分组配置 > 角色权限 */
+  const [uRows] = await pool.query('SELECT menu_key, visible FROM user_menu_perms WHERE user_id = ?', [user.id]);
+  const uMap = {};
+  uRows.forEach((r) => { uMap[r.menu_key] = r.visible === 1; });
+
+  const [gRows] = await pool.query('SELECT menu_key, visible FROM menu_perms WHERE group_id = ?', [user.group_id]);
+  const gMap = {};
+  gRows.forEach((r) => { gMap[r.menu_key] = r.visible === 1; });
+
   return MENUS.filter((m) => {
+    if (Object.prototype.hasOwnProperty.call(uMap, m.key)) return uMap[m.key];
     if (m.parent === null && m.perm === null) return true;
-    if (Object.prototype.hasOwnProperty.call(map, m.key)) return map[m.key];
+    if (Object.prototype.hasOwnProperty.call(gMap, m.key)) return gMap[m.key];
     return hasPerm(user, m.perm);
   }).map((m) => m.key);
+}
+
+/** 计算某用户的菜单生效状态（供管理界面展示） */
+async function effectiveMenus(user) {
+  const [uRows] = await pool.query('SELECT menu_key, visible FROM user_menu_perms WHERE user_id = ?', [user.id]);
+  const uMap = {};
+  uRows.forEach((r) => { uMap[r.menu_key] = r.visible === 1; });
+
+  const [gRows] = await pool.query('SELECT menu_key, visible FROM menu_perms WHERE group_id = ?', [user.group_id]);
+  const gMap = {};
+  gRows.forEach((r) => { gMap[r.menu_key] = r.visible === 1; });
+
+  return MENUS.map((m) => {
+    let visible, source;
+    if (Object.prototype.hasOwnProperty.call(uMap, m.key)) {
+      visible = uMap[m.key]; source = 'user';
+    } else if (Object.prototype.hasOwnProperty.call(gMap, m.key)) {
+      visible = gMap[m.key]; source = 'group';
+    } else if (m.parent === null && m.perm === null) {
+      visible = true; source = 'default';
+    } else {
+      visible = hasPerm(user, m.perm); source = 'role';
+    }
+    return { key: m.key, label: m.label, parent: m.parent, perm: m.perm, visible, source };
+  });
 }
 
 
@@ -3597,6 +3637,70 @@ async function api(req, res, pathname, query) {
       if (rows[0].username === 'admin') return sendJSON(res, 400, { error: '内置管理员不可删除' });
       await pool.query('DELETE FROM sys_users WHERE id = ?', [id]);
       await audit(user, 'delete', 'user', rows[0].username, '删除用户 ' + rows[0].name, req);
+      return sendJSON(res, 200, { ok: true });
+    }
+  }
+
+  /* ---------- 按用户的菜单可见性 ---------- */
+  if (group === 'usermenus') {
+    if (!hasPerm(user, 'user.manage') && !hasPerm(user, 'menu.manage')) return deny(res);
+
+    /* GET /api/usermenus/:userId —— 读取某用户的菜单生效状态 */
+    if (method === 'GET' && id) {
+      const [rows] = await pool.query('SELECT * FROM sys_users WHERE id = ?', [id]);
+      if (!rows.length) return sendJSON(res, 404, { error: '用户不存在' });
+      const target = rows[0];
+      const [gRows] = await pool.query('SELECT menu_key, visible FROM user_menu_perms WHERE user_id = ?', [id]);
+      const uMap = {};
+      gRows.forEach((r) => { uMap[r.menu_key] = r.visible === 1; });
+
+      const [grpRows] = await pool.query('SELECT menu_key, visible FROM menu_perms WHERE group_id = ?', [target.group_id]);
+      const gMap = {};
+      grpRows.forEach((r) => { gMap[r.menu_key] = r.visible === 1; });
+
+      const targetUser = { id: target.id, username: target.username, role: target.role, group_id: target.group_id };
+      const items = MENUS.map((m) => {
+        let visible, source;
+        if (Object.prototype.hasOwnProperty.call(uMap, m.key)) { visible = uMap[m.key]; source = 'user'; }
+        else if (Object.prototype.hasOwnProperty.call(gMap, m.key)) { visible = gMap[m.key]; source = 'group'; }
+        else if (m.parent === null && m.perm === null) { visible = true; source = 'default'; }
+        else { visible = hasPerm(targetUser, m.perm); source = 'role'; }
+        return { key: m.key, label: m.label, parent: m.parent, perm: m.perm, visible, source };
+      });
+      return sendJSON(res, 200, {
+        user: { id: target.id, username: target.username, name: target.name, role: target.role },
+        items,
+      });
+    }
+
+    /* PUT /api/usermenus/:userId —— 批量设置（body: { perms: { key: bool|null } }） */
+    if (method === 'PUT' && id) {
+      const [rows] = await pool.query('SELECT * FROM sys_users WHERE id = ?', [id]);
+      if (!rows.length) return sendJSON(res, 404, { error: '用户不存在' });
+      const b = await readBody(req);
+      const perms = b && b.perms ? b.perms : null;
+      if (!perms || typeof perms !== 'object') return sendJSON(res, 400, { error: '缺少 perms' });
+
+      for (const [key, val] of Object.entries(perms)) {
+        if (!MENUS.some((m) => m.key === key)) continue;
+        if (val === null || val === undefined) {
+          /* null = 恢复继承（删除用户级覆盖） */
+          await pool.query('DELETE FROM user_menu_perms WHERE user_id = ? AND menu_key = ?', [id, key]);
+        } else {
+          await pool.query(
+            'INSERT INTO user_menu_perms (user_id, menu_key, visible) VALUES (?,?,?) ON DUPLICATE KEY UPDATE visible = VALUES(visible)',
+            [id, key, val ? 1 : 0]
+          );
+        }
+      }
+      await audit(user, 'update', 'menu', rows[0].username, '设置用户菜单可见性', req);
+      return sendJSON(res, 200, { ok: true });
+    }
+
+    /* DELETE /api/usermenus/:userId —— 清空该用户的所有覆盖（恢复继承） */
+    if (method === 'DELETE' && id) {
+      await pool.query('DELETE FROM user_menu_perms WHERE user_id = ?', [id]);
+      await audit(user, 'update', 'menu', String(id), '重置用户菜单为继承', req);
       return sendJSON(res, 200, { ok: true });
     }
   }

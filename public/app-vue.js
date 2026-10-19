@@ -1185,6 +1185,7 @@ const App = {
     }
     const userDialog = reactive({ visible: false, mode: 'create', form: {} });
     const permDialog = reactive({ visible: false, role: null });
+    const userMenuDialog = reactive({ visible: false, user: null, items: [], loading: false, saving: false });
     const roleManage = reactive({ visible: false });
     const roleDialog = reactive({ visible: false, mode: 'create', form: {} });
     const permOptions = computed(() => Object.entries(permMap.value || {}).map(([k, v]) => ({ key: k, label: v })));
@@ -1266,6 +1267,56 @@ const App = {
       catch (e) { ElMessage.error(e.message); }
     }
     function openPermView(role) { permDialog.role = role; permDialog.visible = true; }
+
+    /* ---------- 按用户设置菜单可见性 ---------- */
+    async function openUserMenus(u) {
+      userMenuDialog.user = u;
+      userMenuDialog.items = [];
+      userMenuDialog.loading = true;
+      userMenuDialog.visible = true;
+      try {
+        const r = await req('GET', '/usermenus/' + u.id);
+        userMenuDialog.items = r.items || [];
+      } catch (e) { ElMessage.error(e.message); }
+      userMenuDialog.loading = false;
+    }
+    async function toggleUserMenu(item) {
+      item.visible = !item.visible;
+      item.source = 'user';
+      item.dirty = true;
+    }
+    async function saveUserMenus() {
+      const u = userMenuDialog.user;
+      if (!u) return;
+      const perms = {};
+      userMenuDialog.items.forEach((it) => {
+        if (it.source === 'user' || it.dirty) perms[it.key] = !!it.visible;
+      });
+      userMenuDialog.saving = true;
+      try {
+        await req('PUT', '/usermenus/' + u.id, { perms });
+        ElMessage.success('菜单权限已保存');
+        await openUserMenus(u);
+      } catch (e) { ElMessage.error(e.message); }
+      userMenuDialog.saving = false;
+    }
+    async function resetUserMenus() {
+      const u = userMenuDialog.user;
+      if (!u) return;
+      try { await ElMessageBox.confirm('将该用户的菜单恢复为继承（跟随分组/角色）？', '恢复继承', { type: 'warning' }); }
+      catch (_) { return; }
+      try {
+        await req('DELETE', '/usermenus/' + u.id);
+        ElMessage.success('已恢复继承');
+        await openUserMenus(u);
+      } catch (e) { ElMessage.error(e.message); }
+    }
+    function menuSourceText(src) {
+      if (src === 'user') return '用户自定义';
+      if (src === 'group') return '继承分组';
+      if (src === 'role') return '继承角色';
+      return '默认';
+    }
     function permLabel(key) { return permMap.value[key] || key; }
     const ROLES_MAP = computed(() => {
       const m = {};
@@ -1749,6 +1800,7 @@ const App = {
       transferDialog, openTransfer, submitTransfer,
       assigneeOptions, onTicketGroupChange, onTicketAssigneeChange, assigneeGroupName,
       userDialog, permDialog, openUserCreate, openUserEdit, saveUser, toggleUser, removeUser,
+      userMenuDialog, openUserMenus, toggleUserMenu, saveUserMenus, resetUserMenus, menuSourceText,
       openPermView, permLabel,
       roleManage, roleDialog, permOptions, loadRoles, openRoleManage, openRoleCreate, openRoleEdit, saveRole, removeRole,
       assetDialog, assetDetail, openAssetCreate, openAssetEdit, saveAsset,
@@ -2359,9 +2411,10 @@ const App = {
                   <el-switch :model-value="!!row.active" :disabled="!can('user.manage')" @change="toggleUser(row)" />
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="200" fixed="right">
+              <el-table-column label="操作" width="270" fixed="right">
                 <template #default="{ row }">
                   <el-button link type="primary" size="small" @click="openPermView(row)">权限</el-button>
+                  <el-button v-if="can('user.manage')" link type="primary" size="small" @click="openUserMenus(row)">菜单</el-button>
                   <el-button v-if="can('user.manage')" link type="primary" size="small" @click="openUserEdit(row)">编辑</el-button>
                   <el-button v-if="can('user.manage')" link type="danger" size="small" @click="removeUser(row)">删除</el-button>
                 </template>
@@ -2931,6 +2984,45 @@ const App = {
       </div>
       <template #footer>
         <el-button type="primary" @click="permDialog.visible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ============ 用户菜单可见性 ============ -->
+    <el-dialog v-model="userMenuDialog.visible"
+               :title="userMenuDialog.user ? ('菜单可见性 · ' + userMenuDialog.user.name) : '菜单可见性'"
+               width="640px">
+      <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px"
+                title="勾选该用户可见的菜单"
+                description="默认继承分组/角色配置。手动修改后标记为「用户自定义」，优先级最高。" />
+
+      <div v-loading="userMenuDialog.loading">
+        <el-table :data="userMenuDialog.items" size="small" stripe max-height="440">
+          <el-table-column label="菜单" min-width="180">
+            <template #default="{ row }">
+              <span :style="{ paddingLeft: row.parent ? '18px' : '0' }">{{ row.label }}</span>
+              <span v-if="row.parent" style="color:#9ca3af;font-size:11px;margin-left:4px">（子菜单）</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="来源" width="110">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.source === 'user' ? 'warning' : 'info'" effect="plain">
+                {{ menuSourceText(row.source) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="可见" width="90" align="center">
+            <template #default="{ row }">
+              <el-switch :model-value="row.visible" @change="toggleUserMenu(row)" />
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+
+      <template #footer>
+        <el-button @click="resetUserMenus">恢复继承</el-button>
+        <span style="flex:1"></span>
+        <el-button @click="userMenuDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="userMenuDialog.saving" @click="saveUserMenus">保存</el-button>
       </template>
     </el-dialog>
 
