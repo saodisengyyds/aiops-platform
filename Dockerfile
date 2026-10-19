@@ -1,7 +1,13 @@
 # ============================================================
 #  智能运维平台（集群监控版）— 应用镜像
-#  构建：docker build -t aiops:latest .
-#  运行：docker run -d -p 8899:8899 --env-file app.env aiops:latest
+#
+#  构建（本机架构）：
+#    docker build -t aiops:1.0.0 .
+#  构建（指定 x86_64）：
+#    docker buildx build --platform linux/amd64 -t aiops:1.0.0 --load .
+#
+#  说明：mysql2 是纯 JS 实现（0 个 .node 原生模块），
+#       因此 node_modules 可跨架构复用，无需在目标架构上执行 npm install。
 # ============================================================
 FROM node:22-alpine
 
@@ -17,7 +23,7 @@ RUN apk add --no-cache tzdata \
 
 WORKDIR /app
 
-# 依赖（只有 mysql2，纯 JS 无原生模块）
+# 依赖：直接复制预装好的 node_modules（纯 JS，跨架构安全）
 COPY package.json package-lock.json ./
 COPY node_modules ./node_modules
 
