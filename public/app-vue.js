@@ -204,7 +204,7 @@ const App = {
     const notifyTab = ref('channels');
     const pods = ref([]);
     const pf = reactive({ clusterId: null, namespace: '', status: '', keyword: '' });
-    const issuesDialog = reactive({ visible: false, kind: '', title: '', items: [] });
+    const issuesDialog = reactive({ visible: false, kind: '', title: '', items: [], clusterId: null, clusterName: '' });
     const mf2 = reactive({ clusterId: null, status: '', keyword: '' });
     const alf = reactive({ status: 'firing', severity: '', clusterId: null, keyword: '' });
     const af2 = reactive({ keyword: '', status: '' });
@@ -820,6 +820,8 @@ const App = {
         nodes: '节点明细', pods: '全部 Pod 明细', healthy: '健康集群明细', badClusters: '异常集群明细',
       };
       issuesDialog.kind = kind;
+      issuesDialog.clusterId = clusterId || null;
+      issuesDialog.clusterName = clusterName || '';
       const base = titles[kind] || '明细';
       // 带集群时标题带上集群名，明确看的是哪个集群
       issuesDialog.title = clusterName ? (clusterName + ' · ' + base) : base;
@@ -830,6 +832,18 @@ const App = {
         const r = await req('GET', '/monitor/issues' + qs);
         issuesDialog.items = r.items || [];
       } catch (e) { ElMessage.error(e.message); }
+    }
+
+    /* 重载当前已打开的明细弹窗（供自动刷新调用） */
+    async function reloadIssuesIfOpen() {
+      if (!issuesDialog.visible) return;
+      const qs = issuesDialog.clusterId
+        ? ('?kind=' + issuesDialog.kind + '&clusterId=' + issuesDialog.clusterId)
+        : ('?kind=' + issuesDialog.kind);
+      try {
+        const r = await req('GET', '/monitor/issues' + qs);
+        issuesDialog.items = r.items || [];
+      } catch (e) { /* 静默，避免打断用户 */ }
     }
 
     async function gotoAlertTicket(a) {
@@ -1605,6 +1619,18 @@ const App = {
       else if (p === 'alertrules') { loadMonitor(); loadAlertRules(); }
       else if (p === 'notify') { loadNotify(); }
       else { loadMonitor(); }
+      /* 已打开的弹窗同步刷新 */
+      reloadIssuesIfOpen();
+      if (componentsDialog.visible && componentsDialog.cluster) {
+        req('GET', `/clusters/${componentsDialog.cluster.id}/components`)
+          .then((v) => { components.value = v || []; })
+          .catch(() => {});
+      }
+      if (clusterPodsDialog.visible && clusterPodsDialog.cluster) {
+        req('GET', '/pods?clusterId=' + clusterPodsDialog.cluster.id)
+          .then((v) => { clusterPodsDialog.list = v || []; })
+          .catch(() => {});
+      }
     }
 
     onMounted(async () => {
@@ -1721,7 +1747,7 @@ const App = {
       notifyChannels, notifyLogs, notifyDialog, notifyTab, loadNotify, emptyNotify,
       openNotifyCreate, openNotifyEdit, saveNotify, removeNotify, toggleNotify, testNotify, onNotifyTypeChange,
       CHANNEL_TYPE_TEXT, CHANNEL_TYPE_TAG,
-      issuesDialog, openIssues,
+      issuesDialog, openIssues, reloadIssuesIfOpen,
       clusterDialog, nodeDialog, alertRuleDialog, mf2, alf,
       loadMonitor, loadNodes, resetNodeFilter, loadAlerts, resetAlertFilter, loadAlertRules,
       resolveAlert, openClusterCreate, openClusterEdit, saveCluster, removeCluster,
