@@ -80,8 +80,32 @@ node server-mysql.js
 
 ### 方式三：构建镜像
 
+**在本机构建（推荐）** —— 构建出的镜像架构与本机一致：
+
 ```bash
 docker build -t aiops:1.0.0 .
+```
+
+**指定架构构建**（例如在 ARM 机器上构建 x86_64 镜像）：
+
+```bash
+# x86_64 / amd64
+docker buildx build --platform linux/amd64 -t aiops:1.0.0 --load .
+
+# ARM64（Apple Silicon、鲲鹏、飞腾等）
+docker buildx build --platform linux/arm64 -t aiops:1.0.0 --load .
+
+# 多架构（可推到 registry 供不同平台拉取）
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t <registry>/aiops:1.0.0 --push .
+```
+
+> **注意**：Docker 镜像与 CPU 架构绑定。在 ARM 机器上直接 `docker build` 得到的是 arm64 镜像，
+> 拿到 x86 服务器上会报 `exec format error`。务必用上面的 `--platform` 指定目标架构。
+
+运行：
+
+```bash
 docker run -d --name aiops-app \
   -e DB_HOST=<数据库地址> \
   -e DB_NAME=aiops \
@@ -89,6 +113,13 @@ docker run -d --name aiops-app \
   -e DB_PASS='密码' \
   -p 8899:8899 \
   aiops:1.0.0
+```
+
+**镜像架构速查：**
+
+```bash
+docker image inspect aiops:1.0.0 --format '{{.Architecture}}'
+# amd64  或  arm64
 ```
 
 ---
