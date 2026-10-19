@@ -4,8 +4,8 @@
 #  适用：openEuler / CentOS / RHEL / Ubuntu / Debian (systemd)
 #
 #  用法：
-#    sudo bash deploy.sh                  # 用已有的 MySQL/MariaDB
-#    sudo bash deploy.sh --docker-db      # 自动起 MariaDB 容器 + 部署应用
+#    sudo bash deploy.sh                  # 用已有的 MySQL
+#    sudo bash deploy.sh --docker-db      # 自动起 MySQL 容器 + 部署应用
 #    sudo bash deploy.sh --help
 # ============================================================
 set -euo pipefail
@@ -25,7 +25,7 @@ DB_PASS=${DB_PASS:-}
 DOCKER_DB=0
 NO_SYSTEMD=0
 DB_CONTAINER=${DB_CONTAINER:-aiops-db}
-DB_IMAGE=${DB_IMAGE:-mariadb:11.4}
+DB_IMAGE=${DB_IMAGE:-mysql:8.4}
 DATA_DIR=${DATA_DIR:-/data}
 DB_MOUNT=${DB_MOUNT:-$DATA_DIR/mysql}
 DB_DOCKER_PORT=${DB_DOCKER_PORT:-3307}
@@ -40,18 +40,18 @@ usage() {
 用法: sudo bash deploy.sh [选项]
 
 选项:
-  --docker-db          自动启动 MariaDB 容器并让应用连它
+  --docker-db          自动启动 MySQL 容器并让应用连它
   --no-systemd         不创建 systemd 服务（调试用，前台提示启动命令）
   --port <n>           应用端口（默认 8899）
   --db-port <n>        数据库端口（docker 模式默认 3307）
-  --app-dir <path>     安装目录（默认 /opt/aiops）
+  --app-dir <path>     应用目录（默认 /app）
   -h, --help           显示帮助
 
 环境变量:
   DB_PASS              应用数据库密码（docker 模式不填则自动生成）
   DB_ROOT_PASS         docker 模式 root 密码（不填则自动生成）
   DB_CONTAINER         容器名（默认 aiops-db）
-  DB_IMAGE             镜像（默认 mariadb:11.4）
+  DB_IMAGE             镜像（默认 mysql:8.4）
   DATA_DIR             数据目录（默认 /data，数据库落在 $DATA_DIR/mysql）
 
 示例:
@@ -152,7 +152,7 @@ SQL
   echo "    等待数据库就绪…"
   READY=0
   for i in $(seq 1 60); do
-    if docker exec "$DB_CONTAINER" healthcheck.sh --connect --innodb_initialized >/dev/null 2>&1; then
+    if docker exec "$DB_CONTAINER" mysqladmin ping -h 127.0.0.1 -uroot -p"$DB_ROOT_PASS" --silent >/dev/null 2>&1; then
       READY=1; break
     fi
     if docker exec "$DB_CONTAINER" mariadb -u"$DB_USER" -p"$DB_PASS" -e "SELECT 1" >/dev/null 2>&1; then
