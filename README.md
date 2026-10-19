@@ -160,6 +160,75 @@ sudo bash agent.sh
 
 ---
 
+## 数据持久化
+
+数据库数据落在**宿主机本地目录**，不是 Docker named volume，便于直接查看、备份、迁移。
+
+```yaml
+# docker-compose.yml
+volumes:
+  - ${DATA_DIR:-./data}/mysql:/var/lib/mysql
+```
+
+目录结构：
+
+```
+${DATA_DIR}/            # 默认 ./data（相对 docker-compose.yml）
+└── mysql/              # MySQL 数据文件（ibdata、binlog、表空间等）
+    ├── aiops/          # 业务库
+    ├── ibdata1
+    ├── binlog.000001
+    └── ...
+```
+
+配置：
+
+```bash
+# .env
+DATA_DIR=./data                 # 相对路径
+# DATA_DIR=/opt/aiops/data      # 生产建议用绝对路径
+```
+
+**为什么用本地目录：**
+
+| 对比 | 本地目录（bind mount） | Docker 卷（named volume） |
+|---|---|---|
+| 直接查看文件 | ✅ `ls /opt/aiops/data/mysql` | ❌ 需 `docker volume inspect` |
+| 备份 | ✅ `tar` / `rsync` 直接拷 | ⚠️ 需通过容器 |
+| 迁移 | ✅ 拷目录即可 | ⚠️ 需 `docker volume` 命令 |
+| 权限管理 | ⚠️ 需注意 UID 映射 | ✅ Docker 托管 |
+
+> **权限提示**：MySQL 容器内以 `mysql` 用户运行，宿主机目录会自动被改为容器内 UID。
+> 若宿主机启用了 SELinux，需加 `:Z` 后缀：
+> `- ${DATA_DIR:-./data}/mysql:/var/lib/mysql:Z`
+
+**备份（直接操作本地目录）：**
+
+```bash
+# 逻辑备份（推荐，跨版本安全）
+docker compose exec -T db mysqldump -uaiops -p"$DB_PASS" --single-transaction aiops \
+  > /opt/aiops/backup/aiops-$(date +%F).sql
+
+# 物理备份（停库后直接拷目录）
+docker compose stop db
+tar -czf /opt/aiops/backup/mysql-data-$(date +%F).tar.gz -C /opt/aiops/data mysql
+docker compose start db
+```
+
+**迁移到新机器：**
+
+```bash
+# 源机器：停库 + 打包
+docker compose stop db
+tar -czf mysql-data.tar.gz -C /opt/aiops/data mysql
+
+# 目标机器：解压到 DATA_DIR + 启动
+tar -xzf mysql-data.tar.gz -C /opt/aiops/data
+docker compose up -d
+```
+
+---
+
 ## 配置项
 
 | 环境变量 | 默认 | 说明 |
@@ -172,6 +241,7 @@ sudo bash agent.sh
 | `DB_USER` | aiops | 数据库用户 |
 | `DB_PASS` | 无 | 数据库密码（**必填**） |
 | `DB_POOL` | 30 | 连接池大小 |
+| `DATA_DIR` | `./data` | 数据持久化目录（宿主机路径） |
 | `SESSION_TTL` | 28800000 | 会话有效期（毫秒） |
 | `PUBLIC_URL` | 自动探测 | 平台对外地址（Agent 命令用） |
 | `CAPTCHA_OFF` | 未设 | 设 `1` 关闭验证码（仅调试） |
