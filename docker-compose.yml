@@ -1,7 +1,13 @@
 # ============================================================
 #  智能运维平台（集群监控版）— Docker Compose 编排
+#
+#  目录约定：
+#    /app        应用目录（docker-compose.yml、.env 所在）
+#    /data       数据目录（MySQL 数据文件持久化于此）
+#
 #  用法：
-#    cp .env.example .env && vi .env     # 改密码
+#    mkdir -p /app /data
+#    cd /app && cp .env.example .env && vi .env
 #    docker compose up -d
 # ============================================================
 
@@ -24,8 +30,8 @@ services:
       - --max-connections=200
       - --innodb-buffer-pool-size=256M
     volumes:
-      # 数据持久化到宿主机本地目录（可直接查看/备份/迁移）
-      - ${DATA_DIR:-./data}/mysql:/var/lib/mysql
+      # 数据持久化到 /data（宿主机本地目录，可直接查看/备份/迁移）
+      - ${DATA_DIR:-/data}/mysql:/var/lib/mysql
     ports:
       # 只绑本机，不对外暴露数据库
       - "127.0.0.1:${DB_HOST_PORT:-3307}:3306"
