@@ -2062,11 +2062,24 @@ DIR=/opt/aiops-agent
 SVC=aiops-agent
 
 if [ "\${1:-}" = "uninstall" ]; then
-  systemctl disable --now $SVC 2>/dev/null || true
-  rm -f /etc/systemd/system/$SVC.service
+  echo "==> 停止并禁用服务"
+  systemctl disable --now "$SVC.timer" 2>/dev/null || true
+  systemctl disable --now "$SVC.service" 2>/dev/null || true
+  systemctl stop "$SVC.timer" 2>/dev/null || true
+  systemctl stop "$SVC.service" 2>/dev/null || true
+
+  echo "==> 删除 systemd 单元"
+  rm -f "/etc/systemd/system/$SVC.service"
+  rm -f "/etc/systemd/system/$SVC.timer"
   systemctl daemon-reload 2>/dev/null || true
+  systemctl reset-failed "$SVC.service" 2>/dev/null || true
+
+  echo "==> 删除程序目录"
   rm -rf "$DIR"
-  echo "已卸载 AIOps Agent"
+
+  echo ""
+  echo "已卸载 AIOps Agent（服务 / 定时器 / 目录 均已清理）"
+  echo "  验证：systemctl status $SVC.timer 应报 not found"
   exit 0
 fi
 
