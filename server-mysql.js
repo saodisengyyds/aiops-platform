@@ -22,7 +22,7 @@ const DB_CFG = {
   host: process.env.DB_HOST || '127.0.0.1',
   port: Number(process.env.DB_PORT || 3306),
   user: process.env.DB_USER || 'aiops',
-  password: process.env.DB_PASS || '',
+  password: process.env.DB_PASS || 'aiops123',
   database: process.env.DB_NAME || 'aiops',
   waitForConnections: true,
   connectionLimit: Number(process.env.DB_POOL || 30),
@@ -1973,6 +1973,7 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 1
+      activeDeadlineSeconds: 300
       template:
         spec:
           serviceAccountName: aiops-agent
@@ -1980,6 +1981,7 @@ spec:
           containers:
             - name: agent
               image: alpine/k8s:1.29.4
+              imagePullPolicy: IfNotPresent
               command: ["/bin/bash", "/opt/agent/aiops-agent.sh"]
               env:
                 - name: PLATFORM
@@ -2142,13 +2144,37 @@ kubectl -n "$NS" create configmap aiops-agent \\
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "==> [3/4] 创建 RBAC 与定时任务（每 1 分钟采集一次）"
-kubectl apply -f - <<'K8S_MANIFEST_EOF'
+cat > /tmp/aiops-manifest.yaml <<'K8S_MANIFEST_EOF'
 ${manifest}
 K8S_MANIFEST_EOF
 
+# 兼容老版本 K8s：CronJob 在 1.21 之前属于 batch/v1beta1
+CRON_API="batch/v1"
+if ! kubectl api-versions 2>/dev/null | grep -qx 'batch/v1'; then
+  if kubectl api-versions 2>/dev/null | grep -qx 'batch/v1beta1'; then
+    CRON_API="batch/v1beta1"
+    sed -i 's|^apiVersion: batch/v1$|apiVersion: batch/v1beta1|' /tmp/aiops-manifest.yaml
+    echo "    检测到 K8s < 1.21，CronJob 使用 batch/v1beta1"
+  else
+    echo "    警告：集群未注册 batch/v1 或 batch/v1beta1，CronJob 可能创建失败"
+  fi
+fi
+
+if ! kubectl apply -f /tmp/aiops-manifest.yaml; then
+  echo ""
+  echo "清单应用失败。请把上面的报错发给运维。"
+  echo "若为 CronJob 版本问题，可手动确认：kubectl api-versions | grep batch"
+  exit 1
+fi
+
 echo "==> [4/4] 立即执行一次，验证连通性"
 kubectl -n "$NS" delete job aiops-agent-manual --ignore-not-found >/dev/null 2>&1 || true
-kubectl -n "$NS" create job --from=cronjob/aiops-agent aiops-agent-manual >/dev/null 2>&1 || true
+if kubectl create job --help 2>&1 | grep -q -- '--from'; then
+  kubectl -n "$NS" create job --from=cronjob/aiops-agent aiops-agent-manual >/dev/null 2>&1 || true
+else
+  echo "    kubectl 版本较老（无 --from=cronjob），跳过立即执行"
+  echo "    CronJob 会在 1 分钟内自动调度首次采集"
+fi
 
 echo ""
 echo "============================================================"
