@@ -2653,6 +2653,38 @@ async function api(req, res, pathname, query) {
     return sendJSON(res, 200, { ok: true });
   }
 
+  /* ---------- 修改自己的密码 ---------- */
+  if (group === 'me' && idRaw === 'password' && method === 'POST') {
+    const b = await readBody(req);
+    const oldPwd = String(b.oldPassword !== undefined ? b.oldPassword : (b.oldPwd !== undefined ? b.oldPwd : ''));
+    const newPwd = String(b.newPassword !== undefined ? b.newPassword : (b.newPwd !== undefined ? b.newPwd : ''));
+    if (!oldPwd || !newPwd) return sendJSON(res, 400, { error: '请填写原密码和新密码' });
+    if (newPwd.length < 6) return sendJSON(res, 400, { error: '新密码至少 6 位' });
+    if (oldPwd === newPwd) return sendJSON(res, 400, { error: '新密码不能与原密码相同' });
+
+    const [rows] = await pool.query('SELECT * FROM sys_users WHERE username = ?', [user.username]);
+    const u = rows[0];
+    if (!u) return sendJSON(res, 404, { error: '用户不存在' });
+    if (String(u[PWD_FIELD]) !== oldPwd) {
+      await audit(user, 'password.fail', 'auth', user.username, '原密码错误', req);
+      return sendJSON(res, 400, { error: '原密码错误' });
+    }
+    await pool.query('UPDATE sys_users SET ' + PWD_FIELD + ' = ? WHERE username = ?', [newPwd, user.username]);
+    await audit(user, 'password', 'auth', user.username, '修改自己的密码', req);
+
+    /* 使其他会话失效（保留当前会话） */
+    const h = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim();
+    try {
+      const [sess] = await pool.query('SELECT token FROM sys_sessions WHERE username = ?', [user.username]);
+      for (const row of sess) {
+        if (row.token !== h) SESSIONS.delete(row.token);
+      }
+      await pool.query('DELETE FROM sys_sessions WHERE username = ? AND token <> ?', [user.username, h]);
+    } catch (_) { /* ignore */ }
+
+    return sendJSON(res, 200, { ok: true, message: '密码已修改' });
+  }
+
   if (group === 'roles') {
     // 查看角色：沿用 user.manage（用户与权限页要展示角色列表）
     if (method === 'GET' && !id) {

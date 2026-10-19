@@ -30,10 +30,12 @@ const PAGES = [
       { key: 'notify', label: '通知渠道', icon: 'Bell', perm: 'alert.manage' },
     ],
   },
+  { key: 'users', label: '用户与权限', icon: 'UserFilled', perm: 'user.manage' },
 ];
 const PAGE_TITLE = {
   monitor: '集群监控', clusters: '集群总览', nodes: '节点监控',
   alerts: '告警中心', alertrules: '告警规则', notify: '通知渠道',
+  users: '用户与权限',
 };
 const SEVERITY_TEXT = { urgent: '紧急', high: '高', normal: '中', low: '低' };
 const POD_ABNORMAL = ['CrashLoopBackOff', 'Error', 'ImagePullBackOff', 'ErrImagePull', 'OOMKilled', 'Pending', 'Failed'];
@@ -214,6 +216,7 @@ const App = {
     const mf = reactive({ keyword: '', category: '' });
     const openTabs = ref([{ key: 'clusters', label: '集群总览' }]);
     const users = ref([]);
+    const uf = reactive({ keyword: '', role: '' });
     const roles = ref([]);
     const permMap = ref({});
     const userKeyword = ref('');
@@ -270,6 +273,41 @@ const App = {
       }
       finally { logging.value = false; }
     }
+    /* 用户下拉菜单命令 */
+    function onUserCommand(cmd) {
+      if (cmd === 'logout') return logout();
+      if (cmd === 'pwd') return openPwdDialog();
+    }
+
+    /* ---------- 修改自己的密码 ---------- */
+    const pwdDialog = reactive({ visible: false, oldPassword: '', newPassword: '', confirmPassword: '', loading: false });
+    function openPwdDialog() {
+      pwdDialog.oldPassword = '';
+      pwdDialog.newPassword = '';
+      pwdDialog.confirmPassword = '';
+      pwdDialog.loading = false;
+      pwdDialog.visible = true;
+    }
+    async function submitPwdChange() {
+      if (!pwdDialog.oldPassword) { ElMessage.error('请输入原密码'); return; }
+      if (!pwdDialog.newPassword) { ElMessage.error('请输入新密码'); return; }
+      if (pwdDialog.newPassword.length < 6) { ElMessage.error('新密码至少 6 位'); return; }
+      if (pwdDialog.newPassword !== pwdDialog.confirmPassword) { ElMessage.error('两次输入的新密码不一致'); return; }
+      pwdDialog.loading = true;
+      try {
+        await req('POST', '/me/password', {
+          oldPassword: pwdDialog.oldPassword,
+          newPassword: pwdDialog.newPassword,
+        });
+        pwdDialog.visible = false;
+        ElMessage.success('密码已修改，其他设备需重新登录');
+      } catch (e) {
+        ElMessage.error(e.message || '修改失败');
+      } finally {
+        pwdDialog.loading = false;
+      }
+    }
+
     async function logout() {
       token.value = ''; user.value = null;
       sessionStorage.removeItem('aiops_token');
@@ -1039,6 +1077,11 @@ const App = {
     const deptManage = reactive({ visible: false });
     const deptDialog = reactive({ visible: false, mode: 'create', form: {} });
     function openDeptManage() { deptManage.visible = true; loadDepartments(); }
+    /* 组织分组：复用 groupDialog 的列表弹窗 */
+    function openGroupManage() {
+      if (typeof groupManage !== 'undefined') { groupManage.visible = true; loadGroups(); }
+      else { loadGroups(); }
+    }
     function emptyDept() { return { name: '', desc: '', sort: 99 }; }
     function openDeptCreate() { deptDialog.mode = 'create'; deptDialog.form = emptyDept(); deptDialog.visible = true; }
     function openDeptEdit(d) { deptDialog.mode = 'edit'; deptDialog.form = { id: d.id, name: d.name, desc: d.desc, sort: d.sort }; deptDialog.visible = true; }
@@ -1224,6 +1267,11 @@ const App = {
     }
     function openPermView(role) { permDialog.role = role; permDialog.visible = true; }
     function permLabel(key) { return permMap.value[key] || key; }
+    const ROLES_MAP = computed(() => {
+      const m = {};
+      (roles.value || []).forEach((r) => { m[r.key] = { name: r.name }; });
+      return m;
+    });
     function roleName(key) {
       const r = roles.value.find((x) => x.key === key);
       return r ? r.name : (key || '-');
@@ -1565,6 +1613,8 @@ const App = {
       else if (p === 'nodes') { loadMonitor(); loadNodes(); }
       else if (p === 'alerts') { loadMonitor(); loadAlerts(); }
       else if (p === 'alertrules') { loadMonitor(); loadAlertRules(); }
+      else if (p === 'notify') { loadMonitor(); loadNotify(); }
+      else if (p === 'users') { loadUsers(); }
       sidebarOpen.value = false;
     }
     /* 组件状态标签：NotFound 视为「未部署」（灰色），不算故障 */
@@ -1683,7 +1733,7 @@ const App = {
     const today = new Date();
 
     return {
-      token, user, page, sidebarOpen, loginErr, loginForm, logging, doLogin, logout, quickLogin, loadCaptcha, captchaImg, captchaId, captchaLoading,
+      token, user, page, sidebarOpen, loginErr, loginForm, logging, doLogin, logout, quickLogin, loadCaptcha, captchaImg, captchaId, captchaLoading, pwdDialog, openPwdDialog, submitPwdChange, onUserCommand,
       stats, tickets, assets, kb, tf, af, kf, loadTickets, loadAssets, loadKB, loadAll,
       PAGES, PAGE_TITLE, STATUS_TEXT, STATUS_TAG, PRIORITY_TEXT, PRIORITY_TAG,
       ASSET_STATUS, ASSET_TAG, CATEGORIES, ASSET_TYPES, KB_CATEGORIES_FALLBACK, RES_CATEGORIES, AUDIT_STATUS, ASSET_AUDIT_TAG,
@@ -1691,7 +1741,7 @@ const App = {
       ticketDialog, ticketDetail, openTicketCreate, openTicketEdit, saveTicket,
       openTicketDetail, saveTicketStatus, addComment, removeTicket, doTransition,
       FLOW_TEXT, FLOW_TAG,
-      users, roles, permMap, can, visiblePages, loadUsers, userKeyword, filteredUsers,
+      users, roles, permMap, can, visiblePages, loadUsers, userKeyword, filteredUsers, uf, ROLES_MAP, openGroupManage,
       groups, rules, orgTab, loadGroups, loadRules,
       departments, loadDepartments, deptManage, deptDialog, openDeptManage, openDeptCreate, openDeptEdit, saveDept, removeDept,
       groupDialog, ruleDialog, openGroupCreate, openGroupEdit, saveGroup, removeGroup,
@@ -1864,7 +1914,7 @@ const App = {
           <el-badge is-dot>
             <el-icon style="font-size:18px;cursor:pointer;color:#4b5563" @click="go('alerts')"><Bell /></el-icon>
           </el-badge>
-          <el-dropdown trigger="click" @command="(c) => c === 'logout' && logout()">
+          <el-dropdown trigger="click" @command="onUserCommand">
             <div class="user-chip">
               <div class="avatar">{{ (user.name || '管').slice(0, 1) }}</div>
               <span class="nm">{{ user.name }}</span>
@@ -1874,7 +1924,8 @@ const App = {
               <el-dropdown-menu>
                 <el-dropdown-item disabled>{{ user.username }} · {{ user.roleName }}</el-dropdown-item>
                 <el-dropdown-item disabled>{{ user.dept }}</el-dropdown-item>
-                <el-dropdown-item divided command="logout">退出登录</el-dropdown-item>
+                <el-dropdown-item divided command="pwd">修改密码</el-dropdown-item>
+                  <el-dropdown-item command="logout">退出登录</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
@@ -2270,6 +2321,54 @@ const App = {
               </div>
             </el-tab-pane>
           </el-tabs>
+        </template>
+
+        <!-- ========== 用户与权限 ========== -->
+        <template v-else-if="page === 'users'">
+          <div class="toolbar">
+            <el-input v-model="uf.keyword" placeholder="账号 / 姓名 / 部门" clearable style="width:220px"
+                      @keyup.enter="loadUsers" @clear="loadUsers" />
+            <el-select v-model="uf.role" placeholder="全部角色" clearable style="width:150px" @change="loadUsers">
+              <el-option v-for="(r, k) in ROLES_MAP" :key="k" :label="r.name" :value="k" />
+            </el-select>
+            <el-button type="primary" @click="loadUsers"><el-icon><Search /></el-icon>&nbsp;查询</el-button>
+            <span class="spacer"></span>
+            <span style="font-size:13px;color:#6b7280">共 {{ users.length }} 个用户</span>
+            <el-button v-if="can('user.manage')" type="primary" @click="openUserCreate">
+              <el-icon><Plus /></el-icon>&nbsp;新建用户
+            </el-button>
+            <el-button @click="openRoleManage"><el-icon><Setting /></el-icon>&nbsp;角色管理</el-button>
+            <el-button @click="openDeptManage"><el-icon><OfficeBuilding /></el-icon>&nbsp;部门管理</el-button>
+            <el-button @click="openGroupManage"><el-icon><Share /></el-icon>&nbsp;组织分组</el-button>
+          </div>
+
+          <div class="table-wrap">
+            <el-table :data="filteredUsers" style="width:100%" stripe>
+              <el-table-column prop="username" label="账号" width="130" />
+              <el-table-column prop="name" label="姓名" width="110" />
+              <el-table-column label="角色" width="120">
+                <template #default="{ row }">
+                  <el-tag size="small" effect="plain">{{ row.roleName || row.role }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="groupName" label="所属组" width="140" />
+              <el-table-column prop="org" label="单位" min-width="160" show-overflow-tooltip />
+              <el-table-column prop="dept" label="部门" width="130" />
+              <el-table-column prop="phone" label="联系方式" width="140" />
+              <el-table-column label="状态" width="90">
+                <template #default="{ row }">
+                  <el-switch :model-value="!!row.active" :disabled="!can('user.manage')" @change="toggleUser(row)" />
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="200" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" size="small" @click="openPermView(row)">权限</el-button>
+                  <el-button v-if="can('user.manage')" link type="primary" size="small" @click="openUserEdit(row)">编辑</el-button>
+                  <el-button v-if="can('user.manage')" link type="danger" size="small" @click="removeUser(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
         </template>
       </main>
     </div>
@@ -2693,6 +2792,27 @@ const App = {
         <el-button type="danger" plain @click="removeKB(kbDetail.data)">删除</el-button>
         <el-button @click="openKBEdit(kbDetail.data)">编辑</el-button>
         <el-button type="primary" @click="kbDetail.visible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ============ 修改密码 ============ -->
+    <el-dialog v-model="pwdDialog.visible" title="修改密码" width="440px">
+      <el-form label-width="90px" @submit.prevent>
+        <el-form-item label="原密码">
+          <el-input v-model="pwdDialog.oldPassword" type="password" show-password placeholder="请输入当前密码" />
+        </el-form-item>
+        <el-form-item label="新密码">
+          <el-input v-model="pwdDialog.newPassword" type="password" show-password placeholder="至少 6 位" />
+        </el-form-item>
+        <el-form-item label="确认密码">
+          <el-input v-model="pwdDialog.confirmPassword" type="password" show-password placeholder="再次输入新密码" />
+        </el-form-item>
+      </el-form>
+      <el-alert type="info" :closable="false" show-icon
+                title="修改后其他设备需重新登录，当前会话保持有效" style="margin-top:4px" />
+      <template #footer>
+        <el-button @click="pwdDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="pwdDialog.loading" @click="submitPwdChange">确定</el-button>
       </template>
     </el-dialog>
 
