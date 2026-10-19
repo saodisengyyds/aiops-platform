@@ -2387,8 +2387,10 @@ async function handleAgentReport(req, res, b) {
     [(b.clusterInfo && b.clusterInfo.version) || null, cid]);
 
   if (Array.isArray(b.nodes)) {
+    const seenNodes = [];
     for (const n of b.nodes) {
       const conds = Array.isArray(n.conditions) ? n.conditions.join(',') : (n.conditions || '');
+      if (n.name) seenNodes.push(String(n.name));
       await pool.query(
         'INSERT INTO cluster_nodes (cluster_id, name, role, status, ip, kubelet_version, os, cpu_cores, mem_total_mb, cpu_usage, mem_usage, disk_usage, pod_count, conditions, updated_at) ' +
         'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW()) ON DUPLICATE KEY UPDATE role=VALUES(role), status=VALUES(status), ip=VALUES(ip), ' +
@@ -2403,6 +2405,11 @@ async function handleAgentReport(req, res, b) {
         [cid, n.name, now, n.cpuUsage || 0, n.memUsage || 0, n.diskUsage || 0, n.netRxKbps || 0, n.netTxKbps || 0, n.load1 || 0]
       );
       alertsFired += await evaluateNodeAlerts(cid, n);
+    }
+    /* 清理已不存在的节点（节点被删除/下线） */
+    if (seenNodes.length) {
+      const ph = seenNodes.map(() => '?').join(',');
+      await pool.query('DELETE FROM cluster_nodes WHERE cluster_id = ? AND name NOT IN (' + ph + ')', [cid, ...seenNodes]);
     }
   }
 
@@ -2458,9 +2465,12 @@ async function handleAgentReport(req, res, b) {
         await notifyResolved(pex[0].id);
       }
     }
+    /* 清理已不存在的 Pod；若上报为空数组，说明集群已无 Pod，全清 */
     if (seen.length) {
       const ph = seen.map(() => '?').join(',');
       await pool.query('DELETE FROM cluster_pods WHERE cluster_id = ? AND CONCAT(namespace, "/", name) NOT IN (' + ph + ')', [cid, ...seen]);
+    } else {
+      await pool.query('DELETE FROM cluster_pods WHERE cluster_id = ?', [cid]);
     }
   }
   alertsFired += podAlerts;
