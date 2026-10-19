@@ -2857,6 +2857,7 @@ async function api(req, res, pathname, query) {
       await pool.query('DELETE FROM clusters WHERE id = ?', [id]);
       await pool.query('DELETE FROM cluster_nodes WHERE cluster_id = ?', [id]);
       await pool.query('DELETE FROM cluster_components WHERE cluster_id = ?', [id]);
+      await pool.query('DELETE FROM cluster_pods WHERE cluster_id = ?', [id]);
       await pool.query('DELETE FROM node_metrics WHERE cluster_id = ?', [id]);
       await audit(user, 'delete', 'cluster', rows[0].name, '删除集群', req);
       return sendJSON(res, 200, { ok: true });
