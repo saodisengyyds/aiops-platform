@@ -2157,8 +2157,8 @@ CRON_API="$(kubectl api-resources --api-group=batch 2>/dev/null \
 if [ -z "$CRON_API" ]; then
   echo "    警告：集群未注册 cronjobs 资源（K8s 版本过低？），CronJob 将创建失败"
 elif [ "$CRON_API" != "batch/v1" ]; then
-  sed -i "s|^apiVersion: batch/v1$|apiVersion: ${CRON_API}|" /tmp/aiops-manifest.yaml
-  echo "    检测到 CronJob apiVersion 为 ${CRON_API}（K8s < 1.21），已自动适配"
+  sed -i "s|^apiVersion: batch/v1$|apiVersion: \${CRON_API}|" /tmp/aiops-manifest.yaml
+  echo "    检测到 CronJob apiVersion 为 \${CRON_API}（K8s < 1.21），已自动适配"
 else
   echo "    CronJob apiVersion: batch/v1"
 fi
