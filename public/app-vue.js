@@ -1923,7 +1923,6 @@ const App = {
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item disabled>{{ user.username }} · {{ user.roleName }}</el-dropdown-item>
-                <el-dropdown-item disabled>{{ user.dept }}</el-dropdown-item>
                 <el-dropdown-item divided command="pwd">修改密码</el-dropdown-item>
                   <el-dropdown-item command="logout">退出登录</el-dropdown-item>
               </el-dropdown-menu>
