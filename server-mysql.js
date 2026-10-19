@@ -1035,7 +1035,9 @@ function checkCaptcha(id, code) {
 /* ============================== 会话 ============================== */
 
 const SESSIONS = new Map();
-const SESSION_TTL = Number(process.env.SESSION_TTL || 8 * 3600 * 1000); // 默认 8 小时
+const SESSION_TTL = Number(process.env.SESSION_TTL || 8 * 3600 * 1000);
+/* Agent 采集镜像：可通过 AGENT_IMAGE 覆盖（国内可用镜像源） */
+const AGENT_IMAGE = process.env.AGENT_IMAGE || 'alpine/k8s:1.29.4';
 
 /* 会话持久化：内存 Map 作一级缓存 + sys_sessions 表作持久层。
    本环境的后台进程会被定期回收（见 keepalive 日志，约每分钟一次），
@@ -1980,7 +1982,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: agent
-              image: alpine/k8s:1.29.4
+              image: ${esc(AGENT_IMAGE)}
               imagePullPolicy: IfNotPresent
               command: ["/bin/bash", "/opt/agent/aiops-agent.sh"]
               env:
@@ -2357,7 +2359,8 @@ async function handleAgentReport(req, res, b) {
         'ON DUPLICATE KEY UPDATE category=VALUES(category), status=VALUES(status), message=VALUES(message), updated_at=NOW()',
         [cid, c.name, c.category || 'control-plane', c.status || 'unknown', c.message || '']
       );
-      const bad = c.status && c.status !== 'Healthy' && c.status !== 'healthy';
+      /* NotFound = 该组件未部署（如 Calico 之外的 CNI），不算故障 */
+      const bad = c.status && !['Healthy', 'healthy', 'NotFound', 'notfound'].includes(c.status);
       const [exist] = await pool.query('SELECT id FROM alerts WHERE cluster_id = ? AND target = ? AND metric = "component_status" AND status = "firing"', [cid, c.name]);
       if (bad) {
         if (!exist.length) {
@@ -2710,7 +2713,7 @@ async function api(req, res, pathname, query) {
                     FROM cluster_nodes GROUP BY cluster_id`),
         pool.query(`SELECT cluster_id, COUNT(*) AS firing FROM alerts WHERE status = 'firing' GROUP BY cluster_id`),
         pool.query(`SELECT cluster_id, COUNT(*) AS badPods FROM cluster_pods WHERE status IN ${BAD_PODS} GROUP BY cluster_id`),
-        pool.query(`SELECT cluster_id, COUNT(*) AS badComps FROM cluster_components WHERE status NOT IN ('Healthy','healthy') GROUP BY cluster_id`),
+        pool.query(`SELECT cluster_id, COUNT(*) AS badComps FROM cluster_components WHERE status NOT IN ('Healthy','healthy','NotFound','notfound') GROUP BY cluster_id`),
       ]);
       const toMap = (rs, key) => { const m = new Map(); for (const r of rs[0]) m.set(Number(r.cluster_id), r); return m; };
       const nodeMap = toMap(nodeAgg, 'n');
@@ -3074,7 +3077,7 @@ async function api(req, res, pathname, query) {
       pool.query('SELECT cluster_id, COUNT(*) AS n FROM cluster_nodes GROUP BY cluster_id'),
       pool.query('SELECT cluster_id, COUNT(*) AS nr FROM cluster_nodes WHERE status <> "Ready" GROUP BY cluster_id'),
       pool.query(`SELECT cluster_id, COUNT(*) AS bp FROM cluster_pods WHERE status IN ${BAD_PODS_SUM} GROUP BY cluster_id`),
-      pool.query(`SELECT cluster_id, COUNT(*) AS bc FROM cluster_components WHERE status NOT IN ('Healthy','healthy') GROUP BY cluster_id`),
+      pool.query(`SELECT cluster_id, COUNT(*) AS bc FROM cluster_components WHERE status NOT IN ('Healthy','healthy','NotFound','notfound') GROUP BY cluster_id`),
       pool.query(`SELECT cluster_id, COUNT(*) AS fi FROM alerts WHERE status = 'firing' GROUP BY cluster_id`),
     ]);
     const mk = (rs) => { const m = new Map(); for (const r of rs[0]) m.set(Number(r.cluster_id), r); return m; };

@@ -1532,6 +1532,14 @@ const App = {
     });
     function openPalette() { palette.keyword = ''; palette.visible = true; }
 
+    /* 从集群卡片进入节点页：只显示该集群的节点 */
+    function goClusterNodes(c) {
+      mf2.clusterId = c.id;
+      mf2.status = '';
+      mf2.keyword = '';
+      go('nodes');
+    }
+
     function go(p, filter) {
       page.value = p;
       const flat = [];
@@ -1671,7 +1679,7 @@ const App = {
       SEVERITY_TEXT, SEVERITY_TAG, ALERT_STATUS_TEXT, CLUSTER_STATUS_TEXT, CLUSTER_STATUS_TAG,
       NODE_STATUS_TAG, METRIC_OPTIONS,
       openTabs, closeTab,
-      palette, paletteItems, openPalette, go, kpiPct,
+      palette, paletteItems, openPalette, go, goClusterNodes, kpiPct,
     };
   },
 
@@ -1931,7 +1939,7 @@ const App = {
                 <span class="spacer"></span>
                 <el-button link type="primary" size="small" @click="openClusterComponents(c)">组件状态</el-button>
                 <el-button v-if="can('pod.view')" link type="primary" size="small" @click="openClusterPods(c)">Pod</el-button>
-                <el-button link type="primary" size="small" @click="go('nodes')">节点</el-button>
+                <el-button link type="primary" size="small" @click="goClusterNodes(c)">节点</el-button>
                 <el-button v-if="can('cluster.manage')" link type="success" size="small" @click="openInstallScript(c)">安装 Agent</el-button>
                 <el-button v-if="can('cluster.manage')" link type="primary" size="small" @click="openClusterEdit(c)">编辑</el-button>
                 <el-button v-if="can('cluster.manage')" link type="danger" size="small" @click="removeCluster(c)">删除</el-button>
