@@ -1553,6 +1553,23 @@ const App = {
       else if (p === 'alertrules') { loadMonitor(); loadAlertRules(); }
       sidebarOpen.value = false;
     }
+    /* 组件状态标签：NotFound 视为「未部署」（灰色），不算故障 */
+    function compTagType(st) {
+      const v = String(st || '').toLowerCase();
+      if (v === 'healthy') return 'success';
+      if (v === 'notfound') return 'info';
+      if (v === 'degraded') return 'warning';
+      return 'danger';
+    }
+    function compStatusText(st) {
+      const v = String(st || '').toLowerCase();
+      if (v === 'healthy') return '正常';
+      if (v === 'notfound') return '未部署';
+      if (v === 'degraded') return '降级';
+      if (v === 'unhealthy') return '异常';
+      return st || '-';
+    }
+
     function closeTab(key) {
       const i = openTabs.value.findIndex((t) => t.key === key);
       if (i < 0) return;
@@ -1713,7 +1730,7 @@ const App = {
       SEVERITY_TEXT, SEVERITY_TAG, ALERT_STATUS_TEXT, CLUSTER_STATUS_TEXT, CLUSTER_STATUS_TAG,
       NODE_STATUS_TAG, METRIC_OPTIONS,
       openTabs, closeTab,
-      palette, paletteItems, openPalette, go, goClusterNodes, kpiPct,
+      palette, paletteItems, openPalette, go, goClusterNodes, kpiPct, compTagType, compStatusText,
     };
   },
 
@@ -2939,7 +2956,7 @@ const App = {
           <el-table-column prop="category" label="类型" width="130" />
           <el-table-column label="状态" width="120">
             <template #default="{ row }">
-              <el-tag :type="row.status === 'Healthy' ? 'success' : 'danger'" size="small">{{ row.status }}</el-tag>
+              <el-tag :type="compTagType(row.status)" size="small">{{ compStatusText(row.status) }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column prop="message" label="说明" min-width="200" show-overflow-tooltip />
