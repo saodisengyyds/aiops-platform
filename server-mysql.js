@@ -1870,6 +1870,47 @@ async function sendToChannel(ch, alert, event) {
 }
 
 /** 告警恢复通知 */
+/**
+ * 启动时核对：清理已失效的组件告警
+ *
+ * 场景：组件从未部署（NotFound）或已恢复健康，但历史告警仍停在 firing。
+ * 原因：告警恢复只在 Agent 再次上报该组件时触发；若该组件从上报列表中消失，
+ *       旧告警会永久挂起。
+ */
+async function reconcileStaleComponentAlerts() {
+  try {
+    const [firing] = await pool.query(
+      "SELECT id, cluster_id, target FROM alerts WHERE metric = 'component_status' AND status = 'firing'"
+    );
+    if (!firing.length) return { resolved: 0, checked: 0 };
+
+    let resolved = 0;
+    for (const a of firing) {
+      const [rows] = await pool.query(
+        'SELECT status FROM cluster_components WHERE cluster_id = ? AND name = ? LIMIT 1',
+        [a.cluster_id, a.target]
+      );
+      const st = rows.length ? String(rows[0].status || '') : null;
+      /* 组件不存在，或状态为 NotFound / Healthy → 告警应关闭 */
+      const shouldResolve = st === null
+        || ['NotFound', 'notfound', 'Healthy', 'healthy'].includes(st);
+      if (shouldResolve) {
+        await pool.query(
+          "UPDATE alerts SET status = 'resolved', resolved_at = NOW() WHERE id = ?",
+          [a.id]
+        );
+        await notifyResolved(a.id);
+        resolved++;
+      }
+    }
+    if (resolved) console.log(`[RECONCILE] 已自动关闭 ${resolved} 条失效组件告警（共检查 ${firing.length} 条）`);
+    return { resolved, checked: firing.length };
+  } catch (e) {
+    console.log('[RECONCILE] 组件告警核对失败:', e.message);
+    return { resolved: 0, checked: 0, error: e.message };
+  }
+}
+
 async function notifyResolved(alertId) {
   try {
     const [rows] = await pool.query('SELECT * FROM alerts WHERE id = ?', [alertId]);
@@ -3101,7 +3142,7 @@ async function api(req, res, pathname, query) {
     const [[{ avgMem }]] = await pool.query('SELECT COALESCE(AVG(mem_usage),0) AS avgMem FROM cluster_nodes');
     const [[{ pods }]] = await pool.query('SELECT COUNT(*) AS pods FROM cluster_pods');
     const [[{ badPods }]] = await pool.query("SELECT COUNT(*) AS badPods FROM cluster_pods WHERE status IN ('CrashLoopBackOff','Error','ImagePullBackOff','ErrImagePull','OOMKilled','Pending','Failed')");
-    const [[{ badComps }]] = await pool.query("SELECT COUNT(*) AS badComps FROM cluster_components WHERE status NOT IN ('Healthy','healthy')");
+    const [[{ badComps }]] = await pool.query("SELECT COUNT(*) AS badComps FROM cluster_components WHERE status NOT IN ('Healthy','healthy','NotFound','notfound')");
     return sendJSON(res, 200, {
       clusters, healthy, unhealthy, unknownClusters, nodes, notReady, firing, urgent, pods, badPods, badComps,
       avgCpu: Number(avgCpu).toFixed(1), avgMem: Number(avgMem).toFixed(1),
@@ -3124,7 +3165,7 @@ async function api(req, res, pathname, query) {
       const [rows] = await pool.query("SELECT p.*, c.name AS cluster_name FROM cluster_pods p LEFT JOIN clusters c ON p.cluster_id = c.id WHERE p.status IN ('CrashLoopBackOff','Error','ImagePullBackOff','ErrImagePull','OOMKilled','Pending','Failed')" + cf('p') + " ORDER BY p.cluster_id, p.namespace, p.name", ca());
       out.items = rows.map((p) => ({ cluster: p.cluster_name, target: p.namespace + '/' + p.name, detail: p.status + (p.reason ? ' / ' + p.reason : '') + ' · 重启 ' + p.restarts + ' 次', status: p.status }));
     } else if (kind === 'badComps') {
-      const [rows] = await pool.query("SELECT k.*, c.name AS cluster_name FROM cluster_components k LEFT JOIN clusters c ON k.cluster_id = c.id WHERE k.status NOT IN ('Healthy','healthy')" + cf('k') + " ORDER BY k.cluster_id, k.name", ca());
+      const [rows] = await pool.query("SELECT k.*, c.name AS cluster_name FROM cluster_components k LEFT JOIN clusters c ON k.cluster_id = c.id WHERE k.status NOT IN ('Healthy','healthy','NotFound','notfound')" + cf('k') + " ORDER BY k.cluster_id, k.name", ca());
       out.items = rows.map((k) => ({ cluster: k.cluster_name, target: k.name, detail: k.status + (k.message ? ' / ' + k.message : ''), status: k.status }));
     } else if (kind === 'firing') {
       const [rows] = await pool.query('SELECT a.*, c.name AS cluster_name FROM alerts a LEFT JOIN clusters c ON a.cluster_id = c.id WHERE a.status = "firing"' + cf('a') + ' ORDER BY FIELD(a.severity,"urgent","high","normal","low"), a.id DESC', ca());
@@ -3152,7 +3193,7 @@ async function api(req, res, pathname, query) {
         if (!n) continue;
         const [[{ nr }]] = await pool.query('SELECT COUNT(*) AS nr FROM cluster_nodes WHERE cluster_id = ? AND status <> "Ready"', [c.id]);
         const [[{ bp }]] = await pool.query("SELECT COUNT(*) AS bp FROM cluster_pods WHERE cluster_id = ? AND status IN ('CrashLoopBackOff','Error','ImagePullBackOff','ErrImagePull','OOMKilled','Pending','Failed')", [c.id]);
-        const [[{ bc }]] = await pool.query("SELECT COUNT(*) AS bc FROM cluster_components WHERE cluster_id = ? AND status NOT IN ('Healthy','healthy')", [c.id]);
+        const [[{ bc }]] = await pool.query("SELECT COUNT(*) AS bc FROM cluster_components WHERE cluster_id = ? AND status NOT IN ('Healthy','healthy','NotFound','notfound')", [c.id]);
         const [[{ fi }]] = await pool.query('SELECT COUNT(*) AS fi FROM alerts WHERE cluster_id = ? AND status = "firing"', [c.id]);
         const issues = [];
         if (Number(nr)) issues.push(nr + ' 个节点异常');
@@ -3175,7 +3216,7 @@ async function api(req, res, pathname, query) {
         if (!n) continue;
         const [[{ nr }]] = await pool.query('SELECT COUNT(*) AS nr FROM cluster_nodes WHERE cluster_id = ? AND status <> "Ready"', [c.id]);
         const [[{ bp }]] = await pool.query("SELECT COUNT(*) AS bp FROM cluster_pods WHERE cluster_id = ? AND status IN ('CrashLoopBackOff','Error','ImagePullBackOff','ErrImagePull','OOMKilled','Pending','Failed')", [c.id]);
-        const [[{ bc }]] = await pool.query("SELECT COUNT(*) AS bc FROM cluster_components WHERE cluster_id = ? AND status NOT IN ('Healthy','healthy')", [c.id]);
+        const [[{ bc }]] = await pool.query("SELECT COUNT(*) AS bc FROM cluster_components WHERE cluster_id = ? AND status NOT IN ('Healthy','healthy','NotFound','notfound')", [c.id]);
         const [[{ fi }]] = await pool.query('SELECT COUNT(*) AS fi FROM alerts WHERE cluster_id = ? AND status = "firing"', [c.id]);
         if (Number(nr) || Number(bp) || Number(bc) || Number(fi)) continue;
         out.items.push({ cluster: c.name, target: c.code, detail: '运行正常 · 版本 ' + (c.version || '-') + ' · 节点 ' + n + ' · 最近上报 ' + (c.last_seen || '-'), status: 'healthy' });
@@ -4660,6 +4701,12 @@ async function ensureIndexes() {
   await seedMonitorIfEmpty();
   await seedNotifyIfEmpty();
   await seedPodsIfEmpty();
+  await reconcileStaleComponentAlerts();
+  /* 每 2 分钟核对一次失效告警（组件已恢复/未部署但告警仍 firing） */
+  const alertReconciler = setInterval(() => {
+    reconcileStaleComponentAlerts().catch(() => {});
+  }, 2 * 60 * 1000);
+  if (alertReconciler.unref) alertReconciler.unref();
   await loadGroups();
   server.listen(PORT, HOST, () => {
     console.log(`智能运维管理平台（MySQL 版）已启动: http://${HOST}:${PORT}`);

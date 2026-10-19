@@ -1566,18 +1566,52 @@ const App = {
     function onKeydown(e) {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); }
     }
+    /* ---------- 自动刷新（60 秒，仅登录后、页面可见时） ---------- */
+    let autoTimer = null;
+    function startAutoRefresh() {
+      stopAutoRefresh();
+      autoTimer = setInterval(() => {
+        if (!token.value || !user.value) return;
+        if (document.hidden) return;          // 页面不可见时跳过
+        refreshCurrentPage();
+      }, 60 * 1000);
+    }
+    function stopAutoRefresh() {
+      if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+    }
+    /* 只刷新当前页面需要的数据，避免全量请求 */
+    function refreshCurrentPage() {
+      const p = page.value;
+      if (p === 'clusters') { loadMonitor(); if (can('pod.view')) loadPods(); }
+      else if (p === 'nodes') { loadMonitor(); loadNodes(); }
+      else if (p === 'alerts') { loadMonitor(); loadAlerts(); }
+      else if (p === 'alertrules') { loadMonitor(); loadAlertRules(); }
+      else if (p === 'notify') { loadNotify(); }
+      else { loadMonitor(); }
+    }
+
     onMounted(async () => {
       document.addEventListener('keydown', onKeydown);
-      if (token.value && user.value) { try { await loadAll(); } catch (_) { /* 保持页面，稍后手动刷新 */ } }
-      else { loadCaptcha(); }   // 未登录时准备验证码
+      if (token.value && user.value) {
+        try { await loadAll(); } catch (_) { /* 保持页面，稍后手动刷新 */ }
+        startAutoRefresh();
+      } else {
+        loadCaptcha();   // 未登录时准备验证码
+      }
     });
-    onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown));
+    onBeforeUnmount(() => {
+      document.removeEventListener('keydown', onKeydown);
+      stopAutoRefresh();
+    });
 
     /* 登录页为深色，需同步 body 背景，避免滚动/回弹时露出浅色底（底部白线） */
     watch([token, user], () => {
       const loggedOut = !token.value || !user.value;
       document.body.classList.toggle('login-mode', loggedOut);
       document.documentElement.classList.toggle('login-mode', loggedOut);
+      /* 登录态变化时启停自动刷新 */
+      if (loggedOut) stopAutoRefresh();
+      else startAutoRefresh();
     }, { immediate: true });
 
     /* ---------- 统计卡 ---------- */
