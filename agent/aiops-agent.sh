@@ -1,0 +1,149 @@
+#!/bin/bash
+# ============================================================
+#  AIOps Agent —— 采集 K8s 集群状态并上报到智能运维管理平台
+#  本脚本由平台自动生成，集群标识与 Token 已内置
+#  依赖：kubectl、jq、curl（K8s 方式推荐镜像 alpine/k8s；裸机方式直接装在宿主机）
+# ============================================================
+set -u
+
+PLATFORM="__PLATFORM__"
+CLUSTER_CODE="__CLUSTER_CODE__"
+TOKEN="__TOKEN__"
+
+if [ -z "$PLATFORM" ] || [ -z "$CLUSTER_CODE" ] || [ -z "$TOKEN" ]; then
+  echo "[aiops-agent] 缺少 PLATFORM / CLUSTER_CODE / TOKEN" >&2
+  exit 1
+fi
+
+for bin in kubectl jq curl; do
+  command -v "$bin" >/dev/null 2>&1 || { echo "[aiops-agent] 缺少依赖：$bin" >&2; exit 1; }
+done
+
+echo "[aiops-agent] 采集集群 ${CLUSTER_CODE} ..."
+
+# ---------- 集群版本 ----------
+ver="$(kubectl version -o json 2>/dev/null | jq -r '.serverVersion.gitVersion // ""' 2>/dev/null)"
+[ -z "$ver" ] && ver="unknown"
+
+# ---------- 节点列表 ----------
+nodes_raw="$(kubectl get nodes -o json 2>/dev/null)"
+if [ -z "$nodes_raw" ]; then
+  echo "[aiops-agent] 无法获取节点列表（检查 RBAC 权限）" >&2
+  exit 1
+fi
+
+# ---------- 每节点 Pod 数 ----------
+pod_map="$(kubectl get pods -A -o json 2>/dev/null \
+  | jq -c '[.items[] | select(.spec.nodeName != null)] | group_by(.spec.nodeName) | map({key: .[0].spec.nodeName, value: length}) | from_entries' 2>/dev/null)"
+[ -z "$pod_map" ] && pod_map='{}'
+
+# ---------- 节点资源使用率（需 metrics-server；缺失则为 0）----------
+top_raw="$(kubectl top nodes --no-headers 2>/dev/null || true)"
+top_map="$(printf '%s\n' "$top_raw" | awk 'NF>=5 { gsub("%","",$3); gsub("%","",$5); printf "%s\t%s\t%s\n", $1, $3, $5 }' \
+  | jq -R -s -c 'split("\n") | map(select(length>0) | split("\t")) | map({key: .[0], value: {cpu: (.[1]|tonumber), mem: (.[2]|tonumber)}}) | from_entries' 2>/dev/null)"
+[ -z "$top_map" ] && top_map='{}'
+
+# ---------- 组装 nodes ----------
+nodes_json="$(printf '%s' "$nodes_raw" | jq -c --argjson pc "$pod_map" --argjson tm "$top_map" '
+  [ .items[] |
+    . as $n |
+    ($n.metadata.labels // {}) as $l |
+    (if ($l["node-role.kubernetes.io/control-plane"] != null or $l["node-role.kubernetes.io/master"] != null) then "master" else "worker" end) as $role |
+    ((($n.status.conditions // []) | map(select(.type == "Ready")) | .[0].status // "Unknown")) as $rdy |
+    (if $rdy == "True" then "Ready" else "NotReady" end) as $status |
+    ((($n.status.conditions // []) | map(select(.status != "True" and (.type == "MemoryPressure" or .type == "DiskPressure" or .type == "PIDPressure" or .type == "NetworkUnavailable"))) | map(.type))) as $conds |
+    ((($n.status.addresses // []) | map(select(.type == "InternalIP")) | .[0].address // "")) as $ip |
+    (($n.status.capacity.cpu // "0")) as $cpu |
+    (($n.status.capacity.memory // "0Ki")) as $mem |
+    ($n.metadata.name) as $name |
+    {
+      name: $name,
+      role: $role,
+      status: $status,
+      ip: $ip,
+      kubeletVersion: ($n.status.nodeInfo.kubeletVersion // ""),
+      os: ($n.status.nodeInfo.osImage // ""),
+      cpuCores: ($cpu | if test("m$") then ((rtrimstr("m") | tonumber) / 1000 | floor) else (tonumber) end),
+      memTotalMb: ($mem | if test("Ki$") then ((rtrimstr("Ki") | tonumber) / 1024 | floor) elif test("Mi$") then (rtrimstr("Mi") | tonumber) elif test("Gi$") then ((rtrimstr("Gi") | tonumber) * 1024 | floor) else 0 end),
+      cpuUsage: (($tm[$name].cpu) // 0),
+      memUsage: (($tm[$name].mem) // 0),
+      diskUsage: 0,
+      podCount: (($pc[$name]) // 0),
+      load1: 0,
+      conditions: $conds
+    }
+  ]')"
+[ -z "$nodes_json" ] && nodes_json='[]'
+
+# ---------- 组件状态 ----------
+api_status="Healthy"
+kubectl get --raw='/readyz' >/dev/null 2>&1 || api_status="Unhealthy"
+
+comps_json="$(kubectl get pods -n kube-system -o json 2>/dev/null | jq -c --arg apistatus "$api_status" '
+  def comp($name; $sel; $cat):
+    ([.items[] | select(.metadata.name | test($sel))]) as $pods |
+    if ($pods | length) == 0 then
+      {name: $name, category: $cat, status: "NotFound", message: "未发现相关 Pod"}
+    else
+      ([$pods[] | select((.status.conditions // []) | map(select(.type == "Ready" and .status == "True")) | length > 0)] | length) as $ready |
+      {name: $name, category: $cat,
+       status: (if $ready == ($pods | length) then "Healthy" else "Degraded" end),
+       message: ("就绪 " + ($ready | tostring) + "/" + ($pods | length | tostring))}
+    end;
+  [ {name: "kube-apiserver", category: "control-plane", status: $apistatus,
+     message: (if $apistatus == "Healthy" then "readyz 正常" else "readyz 异常" end)},
+    comp("etcd"; "etcd"; "control-plane"),
+    comp("kube-scheduler"; "kube-scheduler"; "control-plane"),
+    comp("kube-controller-manager"; "kube-controller-manager"; "control-plane"),
+    comp("coredns"; "coredns"; "addon"),
+    comp("calico"; "calico"; "network"),
+    comp("kube-proxy"; "kube-proxy"; "network")
+  ]')"
+[ -z "$comps_json" ] && comps_json='[]'
+
+# ---------- Pod 状态 ----------
+pods_json="$(kubectl get pods -A -o json 2>/dev/null | jq -c '
+  [ .items[] |
+    . as $p |
+    ([($p.status.containerStatuses // [])[] | .restartCount] | add // 0) as $restarts |
+    (([($p.status.containerStatuses // [])[] | select(.ready == true)] | length)) as $readyN |
+    (($p.spec.containers // []) | length) as $totalN |
+    ([($p.status.containerStatuses // [])[] | select(.state.waiting != null) | .state.waiting.reason] | .[0] // "") as $waiting |
+    ([($p.status.containerStatuses // [])[] | select(.state.terminated != null) | .state.terminated.reason] | .[0] // "") as $term |
+    (if $waiting != "" then $waiting else $term end) as $reason |
+    (if $waiting == "CrashLoopBackOff" then "CrashLoopBackOff"
+     elif $waiting == "ImagePullBackOff" then "ImagePullBackOff"
+     elif $waiting == "ErrImagePull" then "ErrImagePull"
+     elif $reason == "OOMKilled" then "OOMKilled"
+     elif $p.status.phase == "Pending" then "Pending"
+     elif $p.status.phase == "Failed" then "Failed"
+     elif $p.status.phase == "Succeeded" then "Succeeded"
+     else "Running" end) as $status |
+    {
+      namespace: $p.metadata.namespace,
+      name: $p.metadata.name,
+      node: ($p.spec.nodeName // ""),
+      phase: ($p.status.phase // "Unknown"),
+      ready: (($readyN | tostring) + "/" + ($totalN | tostring)),
+      restarts: $restarts,
+      status: $status,
+      reason: $reason
+    }
+  ] | .[0:500]')"
+[ -z "$pods_json" ] && pods_json='[]'
+
+# ---------- 上报 ----------
+payload="$(jq -n -c --arg code "$CLUSTER_CODE" --arg token "$TOKEN" --arg ver "$ver" \
+  --argjson nodes "$nodes_json" --argjson comps "$comps_json" --argjson pods "$pods_json" \
+  '{clusterCode: $code, token: $token, clusterInfo: {version: $ver}, nodes: $nodes, components: $comps, pods: $pods}')"
+
+resp="$(curl -fsS -m 25 -X POST "$PLATFORM/api/agent/report" \
+  -H 'Content-Type: application/json' -d "$payload" 2>&1)"
+rc=$?
+
+if [ $rc -ne 0 ]; then
+  echo "[aiops-agent] 上报失败：$resp" >&2
+  exit 1
+fi
+
+echo "[aiops-agent] 上报成功：$(printf '%s' "$nodes_json" | jq 'length') 个节点，$(printf '%s' "$comps_json" | jq 'length') 个组件，$(printf '%s' "$pods_json" | jq 'length') 个 Pod -> $resp"

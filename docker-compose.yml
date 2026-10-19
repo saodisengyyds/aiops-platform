@@ -1,0 +1,77 @@
+# ============================================================
+#  智能运维平台（集群监控版）— Docker Compose 编排
+#  用法：
+#    cp .env.example .env && vi .env     # 改密码
+#    docker compose up -d
+# ============================================================
+
+services:
+  # ---------- 数据库（MySQL 8.4） ----------
+  db:
+    image: mysql:8.4
+    container_name: aiops-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 中设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME:-aiops}
+      MYSQL_USER: ${DB_USER:-aiops}
+      MYSQL_PASSWORD: ${DB_PASS:?请在 .env 中设置 DB_PASS}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+      - --max-connections=200
+      - --innodb-buffer-pool-size=256M
+    volumes:
+      - aiops-db-data:/var/lib/mysql
+    ports:
+      # 只绑本机，不对外暴露数据库
+      - "127.0.0.1:${DB_HOST_PORT:-3307}:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    networks:
+      - aiops-net
+
+  # ---------- 应用 ----------
+  app:
+    image: ${APP_IMAGE:-aiops:1.0.0}
+    container_name: aiops-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: 8899
+      HOST: 0.0.0.0
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME:-aiops}
+      DB_USER: ${DB_USER:-aiops}
+      DB_PASS: ${DB_PASS}
+      DB_POOL: ${DB_POOL:-30}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      SESSION_TTL: ${SESSION_TTL:-28800000}
+      TZ: Asia/Shanghai
+    ports:
+      - "${APP_HOST_PORT:-8899}:8899"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8899/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    networks:
+      - aiops-net
+
+volumes:
+  aiops-db-data:
+    driver: local
+
+networks:
+  aiops-net:
+    driver: bridge
