@@ -2149,15 +2149,18 @@ ${manifest}
 K8S_MANIFEST_EOF
 
 # 兼容老版本 K8s：CronJob 在 1.21 之前属于 batch/v1beta1
-CRON_API="batch/v1"
-if ! kubectl api-versions 2>/dev/null | grep -qx 'batch/v1'; then
-  if kubectl api-versions 2>/dev/null | grep -qx 'batch/v1beta1'; then
-    CRON_API="batch/v1beta1"
-    sed -i 's|^apiVersion: batch/v1$|apiVersion: batch/v1beta1|' /tmp/aiops-manifest.yaml
-    echo "    检测到 K8s < 1.21，CronJob 使用 batch/v1beta1"
-  else
-    echo "    警告：集群未注册 batch/v1 或 batch/v1beta1，CronJob 可能创建失败"
-  fi
+# 注意：不能用 api-versions 判断（1.20 也列 batch/v1，但那是 Job 的），
+#       必须查 cronjobs 资源实际注册的 apiVersion。
+CRON_API="$(kubectl api-resources --api-group=batch 2>/dev/null \
+  | awk '$1 == "cronjobs" { print $3; exit }')"
+
+if [ -z "$CRON_API" ]; then
+  echo "    警告：集群未注册 cronjobs 资源（K8s 版本过低？），CronJob 将创建失败"
+elif [ "$CRON_API" != "batch/v1" ]; then
+  sed -i "s|^apiVersion: batch/v1$|apiVersion: ${CRON_API}|" /tmp/aiops-manifest.yaml
+  echo "    检测到 CronJob apiVersion 为 ${CRON_API}（K8s < 1.21），已自动适配"
+else
+  echo "    CronJob apiVersion: batch/v1"
 fi
 
 if ! kubectl apply -f /tmp/aiops-manifest.yaml; then
