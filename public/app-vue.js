@@ -119,7 +119,7 @@ const App = {
     const page = ref('clusters');
     const sidebarOpen = ref(false);
     const loginErr = ref('');
-    const loginForm = reactive({ username: 'admin', password: '123456', captcha: '' });
+    const loginForm = reactive({ username: '', password: '', captcha: '' });
     const logging = ref(false);
     /* 图形验证码：图片用 blob URL，id 从响应头拿 */
     const captchaId = ref('');
@@ -326,12 +326,6 @@ const App = {
       loadCaptcha();
     }
     /* 快速登录：填充账号后换一张验证码，避免沿用旧图 */
-    function quickLogin(username) {
-      loginForm.username = username;
-      loginForm.password = '123456';
-      loadCaptcha();
-    }
-
     /* ---------- 数据加载 ---------- */
     async function loadStats() { stats.value = await req('GET', '/stats'); }
     async function loadTickets() {
@@ -1824,7 +1818,7 @@ const App = {
     const today = new Date();
 
     return {
-      token, user, page, sidebarOpen, loginErr, loginForm, logging, doLogin, logout, quickLogin, loadCaptcha, captchaImg, captchaId, captchaLoading, pwdDialog, openPwdDialog, submitPwdChange, onUserCommand,
+      token, user, page, sidebarOpen, loginErr, loginForm, logging, doLogin, logout, loadCaptcha, captchaImg, captchaId, captchaLoading, pwdDialog, openPwdDialog, submitPwdChange, onUserCommand,
       stats, tickets, assets, kb, tf, af, kf, loadTickets, loadAssets, loadKB, loadAll,
       PAGES, PAGE_TITLE, STATUS_TEXT, STATUS_TAG, PRIORITY_TEXT, PRIORITY_TAG,
       ASSET_STATUS, ASSET_TAG, CATEGORIES, ASSET_TYPES, KB_CATEGORIES_FALLBACK, RES_CATEGORIES, AUDIT_STATUS, ASSET_AUDIT_TAG,
@@ -1949,19 +1943,6 @@ const App = {
           <el-button class="login-btn" size="large" :loading="logging" @click="doLogin">登 录</el-button>
         </el-form>
 
-        <div class="login-sep"><span>快速体验</span></div>
-        <div class="quick-row">
-          <button class="quick-btn" @click="quickLogin('admin')">
-            <span class="qd">管理员</span><span class="qu">admin</span>
-          </button>
-          <button class="quick-btn" @click="quickLogin('liqiang')">
-            <span class="qd">运维</span><span class="qu">liqiang</span>
-          </button>
-          <button class="quick-btn" @click="quickLogin('wangfang')">
-            <span class="qd">用户</span><span class="qu">wangfang</span>
-          </button>
-        </div>
-        <p class="login-tip">演示密码均为 <code>123456</code></p>
       </div>
     </div>
   </div>

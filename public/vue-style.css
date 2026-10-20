@@ -157,43 +157,8 @@ body {
 .captcha-ph { font-size: 13px; color: #a8b4c8; }
 
 /* ---------- 快速体验 ---------- */
-.login-sep {
-  position: relative; display: flex; align-items: center; justify-content: center;
-  margin: 22px 0 14px; height: 16px;
-}
-.login-sep::before {
-  content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 1px;
-  transform: translateY(-50%); background: #eef1f6;
-}
-.login-sep span {
-  position: relative; z-index: 1; padding: 0 12px;
-  font-size: 11.5px; color: #a8b4c8; letter-spacing: 1.4px; background: #fff;
-}
 
-.quick-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.quick-btn {
-  display: flex; flex-direction: column; align-items: center; gap: 3px;
-  padding: 9px 4px; cursor: pointer;
-  border-radius: 8px; border: 1px solid #e3e9f2; background: #fafbfd;
-  color: #4a5878; font-family: inherit;
-  transition: all .16s;
-}
-.quick-btn:hover {
-  border-color: #3b82f6; background: #f2f7ff; color: #1f2a44;
-  transform: translateY(-1px);
-}
-.quick-btn .qd { font-size: 12.5px; font-weight: 500; }
-.quick-btn .qu { font-size: 10px; color: #a8b4c8; letter-spacing: .3px; }
-.quick-btn:hover .qu { color: #3b82f6; }
 
-.login-tip {
-  text-align: center; color: #a8b4c8; font-size: 11.5px;
-  margin: 16px 0 0;
-}
-.login-tip code {
-  background: #f1f5fb; padding: 1px 6px; border-radius: 4px;
-  color: #3b82f6; font-size: 11.5px;
-}
 
 /* ---------- 响应式 ---------- */
 @media (max-width: 1024px) {
@@ -209,6 +174,8 @@ body {
     flex: 1 1 auto; padding: 26px 18px 32px;
     background: transparent;
     position: relative; z-index: 1;
+    /* 卡片在剩余空间内垂直居中（去掉快速体验后内容变少） */
+    display: flex; align-items: center; justify-content: center;
   }
   .login-card {
     max-width: 420px; margin: 0 auto; max-height: none; overflow: visible;
@@ -223,7 +190,10 @@ body {
 @media (max-width: 480px) {
   .login-wrap { padding: 0; }
   .login-visual { height: 26vh; min-height: 150px; }
-  .login-side { padding: 22px 18px 28px; border-radius: 18px 18px 0 0; margin-top: -18px; }
+  .login-side {
+    padding: 22px 18px 28px; border-radius: 18px 18px 0 0; margin-top: -18px;
+    display: flex; align-items: center; justify-content: center;
+  }
   .login-card { padding: 0; }
   .login-head h1 { font-size: 17px; }
   .login-head { padding-bottom: 14px; }
@@ -232,8 +202,7 @@ body {
   .captcha-box { flex: 0 0 96px; width: 96px; }
 }
 @media (max-width: 360px) {
-  .quick-btn .qu { display: none; }
-  .captcha-box { flex: 0 0 84px; width: 84px; }
+    .captcha-box { flex: 0 0 84px; width: 84px; }
 }
 
 /* 尊重系统「减少动态效果」 */
