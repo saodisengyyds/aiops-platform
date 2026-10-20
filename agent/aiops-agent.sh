@@ -48,14 +48,24 @@ top_map="$(printf '%s\n' "$top_raw" | awk 'NF>=5 { gsub("%","",$3); gsub("%","",
 stat_lines=""
 for nname in $(printf '%s' "$nodes_raw" | jq -r '.items[].metadata.name' 2>/dev/null); do
   cap_cpu="$(printf '%s' "$nodes_raw" | jq -r --arg n "$nname" '.items[] | select(.metadata.name==$n) | .status.capacity.cpu // "0"' 2>/dev/null)"
+  cap_mem="$(printf '%s' "$nodes_raw" | jq -r --arg n "$nname" '.items[] | select(.metadata.name==$n) | .status.capacity.memory // "0"' 2>/dev/null)"
   st="$(kubectl get --raw "/api/v1/nodes/${nname}/proxy/stats/summary" 2>/dev/null || true)"
   [ -z "$st" ] && continue
-  line="$(printf '%s' "$st" | jq -r --arg n "$nname" --arg cap "$cap_cpu" '
+  line="$(printf '%s' "$st" | jq -r --arg n "$nname" --arg cap "$cap_cpu" --arg capmem "$cap_mem" '
     (.node // {}) as $nd |
     ($cap | if test("m$") then ((rtrimstr("m")|tonumber)/1000) else (tonumber) end) as $cores |
     (($nd.cpu.usageNanoCores // 0)|tonumber) as $nc |
     (($nd.memory.workingSetBytes // 0)|tonumber) as $mu |
-    (($nd.memory.capacityBytes // 0)|tonumber) as $mc |
+    /* 内存总量：优先 node.status.capacity.memory，回退 usage+available */
+    ($capmem | if test("Ki$") then ((rtrimstr("Ki")|tonumber)*1024)
+              elif test("Mi$") then ((rtrimstr("Mi")|tonumber)*1048576)
+              elif test("Gi$") then ((rtrimstr("Gi")|tonumber)*1073741824)
+              elif test("Ti$") then ((rtrimstr("Ti")|tonumber)*1099511627776)
+              elif test("k$")  then ((rtrimstr("k")|tonumber)*1000)
+              elif test("M$")  then ((rtrimstr("M")|tonumber)*1000000)
+              elif test("G$")  then ((rtrimstr("G")|tonumber)*1000000000)
+              else (tonumber) end) as $mc0 |
+    (if $mc0 > 0 then $mc0 else ((($nd.memory.usageBytes // 0)|tonumber) + (($nd.memory.availableBytes // 0)|tonumber)) end) as $mc |
     (($nd.fs.usedBytes // 0)|tonumber) as $du |
     (($nd.fs.capacityBytes // 0)|tonumber) as $dc |
     [ $n,
