@@ -56,7 +56,6 @@ for nname in $(printf '%s' "$nodes_raw" | jq -r '.items[].metadata.name' 2>/dev/
     ($cap | if test("m$") then ((rtrimstr("m")|tonumber)/1000) else (tonumber) end) as $cores |
     (($nd.cpu.usageNanoCores // 0)|tonumber) as $nc |
     (($nd.memory.workingSetBytes // 0)|tonumber) as $mu |
-    /* 内存总量：优先 node.status.capacity.memory，回退 usage+available */
     ($capmem | if test("Ki$") then ((rtrimstr("Ki")|tonumber)*1024)
               elif test("Mi$") then ((rtrimstr("Mi")|tonumber)*1048576)
               elif test("Gi$") then ((rtrimstr("Gi")|tonumber)*1073741824)
