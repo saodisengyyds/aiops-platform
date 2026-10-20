@@ -2022,7 +2022,14 @@ function resolvePlatform(req) {
 }
 
 function agentScriptBody(platform, code, token) {
-  const tpl = fs.readFileSync(path.join(ROOT, 'agent', 'aiops-agent.sh'), 'utf8');
+  const f = path.join(ROOT, 'agent', 'aiops-agent.sh');
+  let tpl;
+  try {
+    tpl = fs.readFileSync(f, 'utf8');
+  } catch (e) {
+    throw new Error(`读取采集脚本失败（${e.code || e.message}）：${f}。` +
+      '若为 Docker 部署，请重建镜像或修正挂载权限（SELinux 环境需 :z 标签）。');
+  }
   return tpl
     .replace('__PLATFORM__', platform)
     .replace('__CLUSTER_CODE__', code)

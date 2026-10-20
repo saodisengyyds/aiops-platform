@@ -9,6 +9,10 @@
 #    mkdir -p /app /data
 #    cd /app && cp .env.example .env && vi .env
 #    docker compose up -d
+#
+#  更新代码：
+#    git pull && docker build -t aiops:1.0.0 . && docker compose up -d --force-recreate app
+#    （agent/ 与 public/ 打包在镜像内，必须重建镜像）
 # ============================================================
 
 services:
@@ -66,12 +70,6 @@ services:
       TZ: Asia/Shanghai
     ports:
       - "${APP_HOST_PORT:-8899}:8899"
-    volumes:
-      # 代码挂载：git pull 后 restart 即生效，无需重建镜像
-      - ./server-mysql.js:/app/server-mysql.js:ro
-      - ./agent:/app/agent:ro
-      - ./public:/app/public:ro
-      - ./lib:/app/lib:ro
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8899/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"]
       interval: 30s
