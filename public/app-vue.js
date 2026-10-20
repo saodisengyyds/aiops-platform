@@ -3155,39 +3155,6 @@ const App = {
           </div>
           <div class="install-hint">仅采集脚本本体（已内置集群标识与 Token），适合自行包装部署。</div>
         </el-tab-pane>
-        <el-tab-pane label="卸载 Agent" name="uninstall">
-          <el-alert type="warning" :closable="false" show-icon style="margin-bottom:12px"
-                    title="卸载前请确认"
-                    description="卸载会停止采集服务并删除 /opt/aiops-agent，平台上的历史数据不受影响。" />
-          <el-divider content-position="left">裸机方式（systemd）</el-divider>
-          <div class="install-block">
-            <pre class="install-pre"># 只检查，不卸载
-curl -fsSL '{{ installDialog.platform }}/api/agent/uninstall.sh' | sudo bash -s -- --check
-
-# 执行卸载
-curl -fsSL '{{ installDialog.platform }}/api/agent/uninstall.sh' | sudo bash</pre>
-            <el-button type="primary" size="small"
-                       @click="copyText('curl -fsSL \'' + installDialog.platform + '/api/agent/uninstall.sh\' | sudo bash')">复制卸载命令</el-button>
-          </div>
-          <div class="install-hint">
-            卸载脚本会：停止并禁用 <code>aiops-agent.timer</code> / <code>aiops-agent.service</code> →
-            删除 systemd 单元 → 清理残留进程 → 删除 <code>/opt/aiops-agent</code> → 逐项验证。<br/>
-            无需平台可用，也无需 token。
-          </div>
-
-          <el-divider content-position="left">K8s 方式（CronJob）</el-divider>
-          <div class="install-block">
-            <pre class="install-pre">kubectl delete namespace aiops-agent
-kubectl delete clusterrolebinding aiops-agent-reader
-kubectl delete clusterrole aiops-agent-reader</pre>
-            <el-button type="primary" size="small"
-                       @click="copyText('kubectl delete namespace aiops-agent\nkubectl delete clusterrolebinding aiops-agent-reader\nkubectl delete clusterrole aiops-agent-reader')">复制卸载命令</el-button>
-          </div>
-          <div class="install-hint">
-            删命名空间会连带删除 CronJob / ConfigMap / ServiceAccount；
-            ClusterRole 与 ClusterRoleBinding 是集群级资源，需单独删除。
-          </div>
-        </el-tab-pane>
       </el-tabs>
       <el-descriptions :column="3" border size="small" style="margin-top:12px">
         <el-descriptions-item label="集群标识">{{ installDialog.cluster ? installDialog.cluster.code : '' }}</el-descriptions-item>
