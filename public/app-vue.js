@@ -75,10 +75,12 @@ const AUDIT_TAG = {
 const FLOW_TEXT = { create: '创建', accept: '受理', resolve: '解决', close: '关闭', reopen: '重新打开', reject: '退回', cancel: '取消', transfer: '转派' };
 const FLOW_TAG = { create: 'info', accept: 'primary', resolve: 'success', close: 'info', reopen: 'warning', reject: 'danger', cancel: 'danger', transfer: 'warning' };
 
+let _bgMode = false;
 async function req(method, url, body) {
   const opt = { method, headers: {} };
   const tk = sessionStorage.getItem('aiops_token');
   if (tk) opt.headers['Authorization'] = 'Bearer ' + tk;
+  if (_bgMode) opt.headers['X-Bg-Refresh'] = '1';
   if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
   const r = await fetch(API + url, opt);
   const text = await r.text();
@@ -300,7 +302,16 @@ const App = {
           newPassword: pwdDialog.newPassword,
         });
         pwdDialog.visible = false;
-        ElMessage.success('密码已修改，其他设备需重新登录');
+        /* 改密成功：清空本地登录态，强制重新登录 */
+        token.value = '';
+        user.value = null;
+        sessionStorage.removeItem('aiops_token');
+        sessionStorage.removeItem('aiops_user');
+        loginErr.value = '';
+        loginForm.password = '';
+        loginForm.captcha = '';
+        loadCaptcha();
+        ElMessage.success('密码已修改，请用新密码重新登录');
       } catch (e) {
         ElMessage.error(e.message || '修改失败');
       } finally {
@@ -1713,6 +1724,11 @@ const App = {
     }
     /* 只刷新当前页面需要的数据，避免全量请求 */
     function refreshCurrentPage() {
+      /* 后台自动刷新：标记 bg，不续期空闲超时 */
+      _bgMode = true;
+      try { _refreshCurrentPage(); } finally { _bgMode = false; }
+    }
+    function _refreshCurrentPage() {
       const p = page.value;
       if (p === 'clusters') { loadMonitor(); if (can('pod.view')) loadPods(); }
       else if (p === 'nodes') { loadMonitor(); loadNodes(); }

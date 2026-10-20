@@ -210,6 +210,16 @@ function availableActions(user, t) {
 /* ============================== 建表 ============================== */
 
 const DDL = [
+  `CREATE TABLE IF NOT EXISTS sys_sessions (
+    token VARCHAR(191) PRIMARY KEY,
+    username VARCHAR(64) NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_active DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME NOT NULL,
+    INDEX idx_sess_user (username),
+    INDEX idx_sess_exp (expires_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
   `CREATE TABLE IF NOT EXISTS sys_groups (
     id INT PRIMARY KEY AUTO_INCREMENT,
     name VARCHAR(64) NOT NULL UNIQUE,
@@ -1044,6 +1054,8 @@ function checkCaptcha(id, code) {
 
 const SESSIONS = new Map();
 const SESSION_TTL = Number(process.env.SESSION_TTL || 8 * 3600 * 1000);
+/* 空闲超时：30 分钟无操作自动退出（后台自动刷新不计入活动） */
+const SESSION_IDLE = Number(process.env.SESSION_IDLE || 30 * 60 * 1000);
 /* Agent 采集镜像：可通过 AGENT_IMAGE 覆盖（国内可用镜像源） */
 const AGENT_IMAGE = process.env.AGENT_IMAGE || 'alpine/k8s:1.29.4';
 
@@ -1528,13 +1540,23 @@ async function seedDepartments() {
 /* 启动时从库里恢复未过期会话，避免重启把在线用户踢下线 */
 async function loadSessions() {
   try {
-    const [rows] = await pool.query('SELECT token, username, expires_at FROM sys_sessions');
-    let n = 0;
+    const [rows] = await pool.query('SELECT token, username, expires_at, last_active FROM sys_sessions');
+    let n = 0, dropped = 0;
     for (const r of rows) {
       const exp = new Date(r.expires_at).getTime();
-      if (exp > Date.now()) { SESSIONS.set(r.token, { username: r.username, exp }); n++; }
+      if (exp <= Date.now()) { dropped++; continue; }
+      const la = r.last_active ? new Date(r.last_active).getTime() : (exp - SESSION_TTL);
+      /* 空闲超时的会话不恢复，顺手清理 */
+      if (Date.now() - la > SESSION_IDLE) {
+        dropped++;
+        try { await pool.query('DELETE FROM sys_sessions WHERE token = ?', [r.token]); } catch (_) { /* ignore */ }
+        continue;
+      }
+      SESSIONS.set(r.token, { username: r.username, exp, lastActive: la });
+      n++;
     }
     if (n) console.log(`[SESSION] 已从数据库恢复 ${n} 个会话`);
+    if (dropped) console.log(`[SESSION] 已清理 ${dropped} 个过期/空闲会话`);
   } catch (e) { console.warn('[SESSION] 恢复会话失败:', e.message); }
 }
 
@@ -1557,16 +1579,34 @@ async function currentUser(req) {
   // 缓存未命中（含进程刚重启）：回源数据库
   if (!sess) {
     try {
-      const [rs] = await pool.query('SELECT username, expires_at FROM sys_sessions WHERE token = ?', [token]);
+      const [rs] = await pool.query('SELECT username, expires_at, last_active FROM sys_sessions WHERE token = ?', [token]);
       const r = rs[0];
       if (!r) return null;
       const exp = new Date(r.expires_at).getTime();
       if (exp < Date.now()) return null;
-      sess = { username: r.username, exp };
+      sess = { username: r.username, exp, lastActive: (r.last_active ? new Date(r.last_active).getTime() : (exp - SESSION_TTL)) };
       SESSIONS.set(token, sess); // 回填缓存
     } catch (_) { return null; }
   }
   if (!sess || sess.exp < Date.now()) { SESSIONS.delete(token); return null; }
+
+  /* 空闲超时：后台自动刷新（X-Bg-Refresh: 1）不算用户活动 */
+  const isBg = String(req.headers['x-bg-refresh'] || '') === '1';
+  const lastActive = Number(sess.lastActive) || (sess.exp - SESSION_TTL);
+  if (Date.now() - lastActive > SESSION_IDLE) {
+    SESSIONS.delete(token);
+    try { await pool.query('DELETE FROM sys_sessions WHERE token = ?', [token]); } catch (_) { /* ignore */ }
+    return null;
+  }
+  if (!isBg) {
+    sess.lastActive = Date.now();
+    SESSIONS.set(token, sess);
+    if (Date.now() - (sess.lastPersist || 0) > 60000) {
+      sess.lastPersist = Date.now();
+      try { await pool.query('UPDATE sys_sessions SET last_active = NOW() WHERE token = ?', [token]); } catch (_) { /* ignore */ }
+    }
+  }
+
   const [rows] = await pool.query('SELECT * FROM sys_users WHERE username = ?', [sess.username]);
   const u = rows[0];
   if (!u || u.active === 0) return null;
@@ -2629,11 +2669,11 @@ async function api(req, res, pathname, query) {
     const token = Buffer.from(raw).toString('base64');
     await withPerms(u);
     const sessExp = Date.now() + SESSION_TTL;
-    SESSIONS.set(token, { username: u.username, exp: sessExp });
+    SESSIONS.set(token, { username: u.username, exp: sessExp, lastActive: Date.now(), lastPersist: Date.now() });
     try {
       await pool.query(
-        'INSERT INTO sys_sessions (token, username, expires_at) VALUES (?,?,?) ' +
-        'ON DUPLICATE KEY UPDATE username = VALUES(username), expires_at = VALUES(expires_at)',
+        'INSERT INTO sys_sessions (token, username, expires_at, last_active) VALUES (?,?,?,NOW()) ' +
+        'ON DUPLICATE KEY UPDATE username = VALUES(username), expires_at = VALUES(expires_at), last_active = NOW()',
         [token, u.username, sqlDatetime(sessExp)]
       );
     } catch (_) { /* 会话落库失败不影响登录 */ }
@@ -2712,17 +2752,18 @@ async function api(req, res, pathname, query) {
     await pool.query('UPDATE sys_users SET ' + PWD_FIELD + ' = ? WHERE username = ?', [newPwd, user.username]);
     await audit(user, 'password', 'auth', user.username, '修改自己的密码', req);
 
-    /* 使其他会话失效（保留当前会话） */
-    const h = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim();
+    /* 改密后使该用户所有会话失效（含当前会话），强制重新登录 */
     try {
       const [sess] = await pool.query('SELECT token FROM sys_sessions WHERE username = ?', [user.username]);
-      for (const row of sess) {
-        if (row.token !== h) SESSIONS.delete(row.token);
-      }
-      await pool.query('DELETE FROM sys_sessions WHERE username = ? AND token <> ?', [user.username, h]);
+      for (const row of sess) SESSIONS.delete(row.token);
+      await pool.query('DELETE FROM sys_sessions WHERE username = ?', [user.username]);
     } catch (_) { /* ignore */ }
+    /* 兜底：内存里可能还有未落库的会话 */
+    for (const [tk, v] of SESSIONS) {
+      if (v && v.username === user.username) SESSIONS.delete(tk);
+    }
 
-    return sendJSON(res, 200, { ok: true, message: '密码已修改' });
+    return sendJSON(res, 200, { ok: true, message: '密码已修改，请重新登录', forceLogout: true });
   }
 
   if (group === 'roles') {
@@ -4856,6 +4897,11 @@ async function ensureIndexes() {
       console.log('已迁移 tickets 三级分类列');
     }
   } catch (e) { console.log('tier 迁移提示:', e.message); }
+  /* 兼容旧库：sys_sessions 补 last_active 列 */
+  try {
+    const [cols] = await pool.query("SHOW COLUMNS FROM sys_sessions LIKE 'last_active'");
+    if (!cols.length) await pool.query('ALTER TABLE sys_sessions ADD COLUMN last_active DATETIME DEFAULT CURRENT_TIMESTAMP');
+  } catch (_) { /* 表可能不存在，DDL 会建 */ }
   await seedIfEmpty();
   await seedTicketCatsIfEmpty();
   await seedMonitorIfEmpty();
