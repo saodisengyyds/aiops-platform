@@ -483,7 +483,8 @@ const DDL = [
     status VARCHAR(16) DEFAULT 'unknown',
     last_seen DATETIME NULL,
     note VARCHAR(255) DEFAULT '',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    deleted_at DATETIME NULL
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
   `CREATE TABLE IF NOT EXISTS cluster_nodes (
@@ -835,7 +836,7 @@ async function seedMonitorIfEmpty() {
     await pool.query('INSERT INTO clusters (name, code, env, region, version, agent_token, status, last_seen) VALUES (?,?,?,?,?,?,?,NOW())',
       [c[0], c[1], c[2], c[3], c[4], c[5], 'healthy']);
   }
-  const [crows] = await pool.query('SELECT id, code FROM clusters');
+  const [crows] = await pool.query('SELECT id, code FROM clusters WHERE deleted_at IS NULL');
   const cid = {};
   crows.forEach((r) => { cid[r.code] = r.id; });
 
@@ -942,7 +943,7 @@ async function seedMonitorIfEmpty() {
 async function seedPodsIfEmpty() {
   const [[{ c }]] = await pool.query('SELECT COUNT(*) AS c FROM cluster_pods');
   if (c > 0) return;
-  const [cl] = await pool.query('SELECT id, code FROM clusters');
+  const [cl] = await pool.query('SELECT id, code FROM clusters WHERE deleted_at IS NULL');
   const cid = {};
   cl.forEach((r) => { cid[r.code] = r.id; });
   if (!cid['prod-bj']) return;
@@ -2454,9 +2455,20 @@ async function evaluateNodeAlerts(cid, node) {
 async function handleAgentReport(req, res, b) {
   const code = String(b.clusterCode || b.cluster || '').trim();
   if (!code) return sendJSON(res, 400, { error: '缺少 clusterCode' });
+
+  /* 墓碑识别：集群已删除时明确告知并给出卸载命令 */
+  if (code.includes('__deleted_')) {
+    return sendJSON(res, 410, {
+      error: '该集群已在平台删除，请卸载本机 Agent',
+      hint: 'sudo systemctl disable --now aiops-agent.timer aiops-agent.service && sudo rm -f /etc/systemd/system/aiops-agent.service /etc/systemd/system/aiops-agent.timer && sudo systemctl daemon-reload && sudo rm -rf /opt/aiops-agent',
+    });
+  }
+
   const [rows] = await pool.query('SELECT * FROM clusters WHERE code = ?', [code]);
   const cl = rows[0];
-  if (!cl) return sendJSON(res, 404, { error: '集群未接入，请先在平台创建集群' });
+  if (!cl || cl.deleted_at) {
+    return sendJSON(res, 404, { error: '集群未接入或已删除，请先在平台创建集群' });
+  }
   if (String(b.token || '') !== cl.agent_token) return sendJSON(res, 401, { error: 'agent token 无效' });
 
   const cid = cl.id;
@@ -2877,7 +2889,7 @@ async function api(req, res, pathname, query) {
   if (group === 'clusters') {
     if (!hasPerm(user, 'cluster.view')) return deny(res);
     if (method === 'GET' && !id) {
-      const [rows] = await pool.query('SELECT * FROM clusters ORDER BY id');
+      const [rows] = await pool.query('SELECT * FROM clusters WHERE deleted_at IS NULL ORDER BY id');
 
       // 第二梯队优化：原实现对每个集群发 7 条 SQL（N+1）。
       // 改为 4 条 GROUP BY 一次性取回全部聚合值，循环内纯内存取值。
@@ -2972,7 +2984,7 @@ async function api(req, res, pathname, query) {
     if (method === 'POST') {
       const b = await readBody(req);
       if (!b.name || !b.code) return sendJSON(res, 400, { error: '集群名称和标识不能为空' });
-      const [dup] = await pool.query('SELECT id FROM clusters WHERE code = ? OR name = ?', [b.code, b.name]);
+      const [dup] = await pool.query('SELECT id FROM clusters WHERE deleted_at IS NULL AND (code = ? OR name = ?)', [b.code, b.name]);
       if (dup.length) return sendJSON(res, 400, { error: '集群名称或标识已存在' });
       const token = 'agt_' + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
       const [r] = await pool.query('INSERT INTO clusters (name, code, env, region, agent_token, note) VALUES (?,?,?,?,?,?)',
@@ -2990,12 +3002,20 @@ async function api(req, res, pathname, query) {
     if (method === 'DELETE' && id) {
       const [rows] = await pool.query('SELECT name FROM clusters WHERE id = ?', [id]);
       if (!rows.length) return sendJSON(res, 404, { error: '集群不存在' });
-      await pool.query('DELETE FROM clusters WHERE id = ?', [id]);
+      /* 墓碑：保留记录并清空 token，使旧 Agent 无法再上报；
+         同时 code 加后缀释放唯一键，便于用同 code 重新接入 */
+      const [full] = await pool.query('SELECT code FROM clusters WHERE id = ?', [id]);
+      const oldCode = full.length ? String(full[0].code) : '';
+      const tombCode = oldCode + '__deleted_' + Date.now();
+      await pool.query(
+        'UPDATE clusters SET deleted_at = NOW(), agent_token = ?, status = \'deleted\', code = ? WHERE id = ?',
+        ['', tombCode, id]
+      );
       await pool.query('DELETE FROM cluster_nodes WHERE cluster_id = ?', [id]);
       await pool.query('DELETE FROM cluster_components WHERE cluster_id = ?', [id]);
       await pool.query('DELETE FROM cluster_pods WHERE cluster_id = ?', [id]);
       await pool.query('DELETE FROM node_metrics WHERE cluster_id = ?', [id]);
-      await audit(user, 'delete', 'cluster', rows[0].name, '删除集群', req);
+      await audit(user, 'delete', 'cluster', rows[0].name, '删除集群（保留墓碑，释放 code=' + oldCode + '）', req);
       return sendJSON(res, 200, { ok: true });
     }
   }
@@ -3244,9 +3264,9 @@ async function api(req, res, pathname, query) {
   /* ---------- 监控总览 ---------- */
   if (group === 'monitor' && method === 'GET' && idRaw === 'summary') {
     if (!hasPerm(user, 'cluster.view')) return deny(res);
-    const [[{ clusters }]] = await pool.query('SELECT COUNT(*) AS clusters FROM clusters');
+    const [[{ clusters }]] = await pool.query('SELECT COUNT(*) AS clusters FROM clusters WHERE deleted_at IS NULL');
     // 健康集群 = 有节点上报 且 无异常节点/Pod/组件/告警
-    const [clRows] = await pool.query('SELECT * FROM clusters');
+    const [clRows] = await pool.query('SELECT * FROM clusters WHERE deleted_at IS NULL');
 
     // 第二梯队优化：原实现对每个集群发 5 条 SQL（N+1）。
     // 改为 4 条 GROUP BY 一次性取回，循环内纯内存判断。
@@ -3272,7 +3292,7 @@ async function api(req, res, pathname, query) {
       if (nr || bp || bc || fi) unhealthy++; else healthy++;
     }
     /* 统计只计入现存集群，避免孤儿记录污染总数 */
-    const EX = 'cluster_id IN (SELECT id FROM clusters)';
+    const EX = 'cluster_id IN (SELECT id FROM clusters WHERE deleted_at IS NULL)';
     const [[{ nodes }]] = await pool.query(`SELECT COUNT(*) AS nodes FROM cluster_nodes WHERE ${EX}`);
     const [[{ notReady }]] = await pool.query(`SELECT COUNT(*) AS notReady FROM cluster_nodes WHERE status <> 'Ready' AND ${EX}`);
     const [[{ firing }]] = await pool.query(`SELECT COUNT(*) AS firing FROM alerts WHERE status = 'firing' AND ${EX}`);
@@ -3325,7 +3345,7 @@ async function api(req, res, pathname, query) {
       }));
     } else if (kind === 'badClusters') {
       // 有异常节点 / 异常 Pod / 异常组件 / 告警中 的集群
-      const [rows] = await pool.query('SELECT * FROM clusters ORDER BY id');
+      const [rows] = await pool.query('SELECT * FROM clusters WHERE deleted_at IS NULL ORDER BY id');
       for (const c of rows) {
         if (c.status === 'unknown') continue;
         const [[{ n }]] = await pool.query('SELECT COUNT(*) AS n FROM cluster_nodes WHERE cluster_id = ?', [c.id]);
@@ -3348,7 +3368,7 @@ async function api(req, res, pathname, query) {
       }
     } else if (kind === 'healthy') {
       // 按推导逻辑筛选：有上报且无任何异常
-      const [rows] = await pool.query('SELECT * FROM clusters ORDER BY id');
+      const [rows] = await pool.query('SELECT * FROM clusters WHERE deleted_at IS NULL ORDER BY id');
       for (const c of rows) {
         if (c.status === 'unknown') continue;
         const [[{ n }]] = await pool.query('SELECT COUNT(*) AS n FROM cluster_nodes WHERE cluster_id = ?', [c.id]);
@@ -3361,7 +3381,7 @@ async function api(req, res, pathname, query) {
         out.items.push({ cluster: c.name, target: c.code, detail: '运行正常 · 版本 ' + (c.version || '-') + ' · 节点 ' + n + ' · 最近上报 ' + (c.last_seen || '-'), status: 'healthy' });
       }
     } else if (kind === 'clusters') {
-      const [rows] = await pool.query('SELECT * FROM clusters ORDER BY id');
+      const [rows] = await pool.query('SELECT * FROM clusters WHERE deleted_at IS NULL ORDER BY id');
       out.items = rows.map((c) => ({ cluster: c.name, target: c.code, detail: '状态 ' + c.status + ' · 版本 ' + (c.version || '-'), status: c.status }));
     }
     return sendJSON(res, 200, out);
@@ -4899,6 +4919,11 @@ async function ensureIndexes() {
       console.log('已迁移 tickets 三级分类列');
     }
   } catch (e) { console.log('tier 迁移提示:', e.message); }
+  /* 兼容旧库：clusters 补 deleted_at 列（墓碑标记） */
+  try {
+    const [cols] = await pool.query("SHOW COLUMNS FROM clusters LIKE 'deleted_at'");
+    if (!cols.length) await pool.query('ALTER TABLE clusters ADD COLUMN deleted_at DATETIME NULL');
+  } catch (_) { /* ignore */ }
   /* 兼容旧库：sys_sessions 补 last_active 列 */
   try {
     const [cols] = await pool.query("SHOW COLUMNS FROM sys_sessions LIKE 'last_active'");
@@ -4907,7 +4932,7 @@ async function ensureIndexes() {
   /* 启动时清理孤儿记录（集群已删但子表残留） */
   try {
     for (const t of ['cluster_nodes', 'cluster_pods', 'cluster_components', 'node_metrics']) {
-      const [r] = await pool.query(`DELETE FROM ${t} WHERE cluster_id NOT IN (SELECT id FROM clusters)`);
+      const [r] = await pool.query(`DELETE FROM ${t} WHERE cluster_id NOT IN (SELECT id FROM clusters WHERE deleted_at IS NULL)`);
       if (r.affectedRows) console.log(`[CLEANUP] ${t}: 清理 ${r.affectedRows} 条孤儿记录`);
     }
   } catch (e) { console.log('[CLEANUP] 孤儿清理失败:', e.message); }
