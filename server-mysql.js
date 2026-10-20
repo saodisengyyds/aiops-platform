@@ -4991,6 +4991,15 @@ async function ensureIndexes() {
       if (r.affectedRows) console.log(`[CLEANUP] ${t}: 清理 ${r.affectedRows} 条孤儿记录`);
     }
   } catch (e) { console.log('[CLEANUP] 孤儿清理失败:', e.message); }
+
+  /* 指标保留策略：只留最近 7 天，避免 node_metrics 无限膨胀 */
+  try {
+    const [r] = await pool.query(
+      'DELETE FROM node_metrics WHERE at < DATE_SUB(NOW(), INTERVAL 7 DAY)'
+    );
+    if (r.affectedRows) console.log(`[CLEANUP] node_metrics: 清理 ${r.affectedRows} 条 7 天前指标`);
+  } catch (e) { console.log('[CLEANUP] node_metrics 清理失败:', e.message); }
+
   await seedIfEmpty();
   await seedTicketCatsIfEmpty();
   await seedMonitorIfEmpty();
@@ -5002,6 +5011,15 @@ async function ensureIndexes() {
     reconcileStaleComponentAlerts().catch(() => {});
   }, 2 * 60 * 1000);
   if (alertReconciler.unref) alertReconciler.unref();
+
+  /* 每 6 小时清理一次过期指标（保留 7 天） */
+  const metricSweeper = setInterval(() => {
+    if (!pool) return;
+    pool.query('DELETE FROM node_metrics WHERE at < DATE_SUB(NOW(), INTERVAL 7 DAY)')
+      .then(([r]) => { if (r.affectedRows) console.log(`[CLEANUP] node_metrics: 定时清理 ${r.affectedRows} 条`); })
+      .catch(() => {});
+  }, 6 * 3600 * 1000);
+  if (metricSweeper.unref) metricSweeper.unref();
   await loadGroups();
   server.listen(PORT, HOST, () => {
     console.log(`智能运维管理平台（MySQL 版）已启动: http://${HOST}:${PORT}`);
