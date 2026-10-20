@@ -2486,7 +2486,24 @@ async function handleAgentReport(req, res, b) {
     /* 清理已不存在的节点（节点被删除/下线） */
     if (seenNodes.length) {
       const ph = seenNodes.map(() => '?').join(',');
+      const [goneNodes] = await pool.query(
+        'SELECT name FROM cluster_nodes WHERE cluster_id = ? AND name NOT IN (' + ph + ')',
+        [cid, ...seenNodes]
+      );
       await pool.query('DELETE FROM cluster_nodes WHERE cluster_id = ? AND name NOT IN (' + ph + ')', [cid, ...seenNodes]);
+      /* 节点消失时，其 firing 告警一并收敛 */
+      for (const gn of goneNodes) {
+        try {
+          const [oa] = await pool.query(
+            "SELECT id FROM alerts WHERE cluster_id = ? AND target = ? AND status = 'firing'",
+            [cid, gn.name]
+          );
+          for (const a of oa) {
+            await pool.query("UPDATE alerts SET status = 'resolved', resolved_at = NOW() WHERE id = ?", [a.id]);
+            await notifyResolved(a.id);
+          }
+        } catch (_) { /* ignore */ }
+      }
     }
   }
 
@@ -3034,6 +3051,8 @@ async function api(req, res, pathname, query) {
       await pool.query('DELETE FROM cluster_components WHERE cluster_id = ?', [id]);
       await pool.query('DELETE FROM cluster_pods WHERE cluster_id = ?', [id]);
       await pool.query('DELETE FROM node_metrics WHERE cluster_id = ?', [id]);
+      /* 该集群的告警一并清理，避免告警中心残留已删除集群的记录 */
+      await pool.query('DELETE FROM alerts WHERE cluster_id = ?', [id]);
       await audit(user, 'delete', 'cluster', rows[0].name, '删除集群（保留墓碑，释放 code=' + oldCode + '）', req);
       return sendJSON(res, 200, { ok: true });
     }
@@ -4964,7 +4983,7 @@ async function ensureIndexes() {
   } catch (_) { /* 表可能不存在，DDL 会建 */ }
   /* 启动时清理孤儿记录（集群已删但子表残留） */
   try {
-    for (const t of ['cluster_nodes', 'cluster_pods', 'cluster_components', 'node_metrics']) {
+    for (const t of ['cluster_nodes', 'cluster_pods', 'cluster_components', 'node_metrics', 'alerts']) {
       const [r] = await pool.query(`DELETE FROM ${t} WHERE cluster_id NOT IN (SELECT id FROM clusters WHERE deleted_at IS NULL)`);
       if (r.affectedRows) console.log(`[CLEANUP] ${t}: 清理 ${r.affectedRows} 条孤儿记录`);
     }
