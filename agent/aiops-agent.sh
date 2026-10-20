@@ -94,7 +94,7 @@ nodes_json="$(printf '%s' "$nodes_raw" | jq -c --argjson pc "$pod_map" --argjson
     (if ($l["node-role.kubernetes.io/control-plane"] != null or $l["node-role.kubernetes.io/master"] != null) then "master" else "worker" end) as $role |
     ((($n.status.conditions // []) | map(select(.type == "Ready")) | .[0].status // "Unknown")) as $rdy |
     (if $rdy == "True" then "Ready" else "NotReady" end) as $status |
-    ((($n.status.conditions // []) | map(select(.status != "True" and (.type == "MemoryPressure" or .type == "DiskPressure" or .type == "PIDPressure" or .type == "NetworkUnavailable"))) | map(.type))) as $conds |
+    ((($n.status.conditions // []) | map(select(.status == "True" and (.type == "MemoryPressure" or .type == "DiskPressure" or .type == "PIDPressure" or .type == "NetworkUnavailable"))) | map(.type))) as $conds |
     ((($n.status.addresses // []) | map(select(.type == "InternalIP")) | .[0].address // "")) as $ip |
     (($n.status.capacity.cpu // "0")) as $cpu |
     (($n.status.capacity.memory // "0Ki")) as $mem |
