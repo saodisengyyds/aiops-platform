@@ -118,31 +118,88 @@ nodes_json="$(printf '%s' "$nodes_raw" | jq -c --argjson pc "$pod_map" --argjson
   ]')"
 [ -z "$nodes_json" ] && nodes_json='[]'
 
-# ---------- 组件状态 ----------
+# ---------- 组件状态（自动发现） ----------
 api_status="Healthy"
 kubectl get --raw='/readyz' >/dev/null 2>&1 || api_status="Unhealthy"
 
-comps_json="$(kubectl get pods -n kube-system -o json 2>/dev/null | jq -c --arg apistatus "$api_status" '
-  def comp($name; $sel; $cat):
-    ([.items[] | select(.metadata.name | test($sel))]) as $pods |
-    if ($pods | length) == 0 then
-      {name: $name, category: $cat, status: "NotFound", message: "未发现相关 Pod"}
+# 1) 控制面：优先按 Pod 名探测，静态 Pod/二进制部署则按端点判断
+cp_probe() {
+  local name="$1" sel="$2"
+  local pods ready total
+  pods="$(printf '%s' "$KS_JSON" | jq -c --arg sel "$sel" '[.items[] | select(.metadata.name | test($sel))]' 2>/dev/null)"
+  total="$(printf '%s' "$pods" | jq 'length' 2>/dev/null || echo 0)"
+  if [ "$total" -gt 0 ]; then
+    ready="$(printf '%s' "$pods" | jq '[.[] | select((.status.conditions // []) | map(select(.type == "Ready" and .status == "True")) | length > 0)] | length' 2>/dev/null || echo 0)"
+    if [ "$ready" = "$total" ]; then
+      printf '{"name":"%s","category":"control-plane","status":"Healthy","message":"就绪 %s/%s"}' "$name" "$ready" "$total"
     else
-      ([$pods[] | select((.status.conditions // []) | map(select(.type == "Ready" and .status == "True")) | length > 0)] | length) as $ready |
-      {name: $name, category: $cat,
-       status: (if $ready == ($pods | length) then "Healthy" else "Degraded" end),
-       message: ("就绪 " + ($ready | tostring) + "/" + ($pods | length | tostring))}
-    end;
-  [ {name: "kube-apiserver", category: "control-plane", status: $apistatus,
-     message: (if $apistatus == "Healthy" then "readyz 正常" else "readyz 异常" end)},
-    comp("etcd"; "etcd"; "control-plane"),
-    comp("kube-scheduler"; "kube-scheduler"; "control-plane"),
-    comp("kube-controller-manager"; "kube-controller-manager"; "control-plane"),
-    comp("coredns"; "coredns"; "addon"),
-    comp("calico"; "calico"; "network"),
-    comp("kube-proxy"; "kube-proxy"; "network")
-  ]')"
+      printf '{"name":"%s","category":"control-plane","status":"Degraded","message":"就绪 %s/%s"}' "$name" "$ready" "$total"
+    fi
+  else
+    printf '{"name":"%s","category":"control-plane","status":"NotFound","message":"未以 Pod 形式运行（静态 Pod / 二进制部署）"}' "$name"
+  fi
+}
+
+# 2) 采集 kube-system 全部 Pod（一次调用，后续复用）
+KS_JSON="$(kubectl get pods -n kube-system -o json 2>/dev/null || echo '{"items":[]}')"
+
+# 3) 自动发现：kube-system 下所有工作负载（按 workload 名前缀聚合 Pod）
+auto_comps="$(printf '%s' "$KS_JSON" | jq -c '
+  [ .items[] |
+    . as $p |
+    ($p.metadata.ownerReferences // []) as $own |
+    (if ($own | length) > 0 then
+       ($own[0].name | sub("-\\d+$"; ""))
+     else
+       ($p.metadata.name | sub("-[a-z0-9]{5,10}-[a-z0-9]{5}$"; "") | sub("-[a-z0-9]{5}$"; ""))
+     end) as $base |
+    { base: $base,
+      ns: $p.metadata.namespace,
+      name: $p.metadata.name,
+      ready: (([$p.status.conditions // [] | .[] | select(.type == "Ready" and .status == "True")] | length) > 0),
+      phase: ($p.status.phase // "Unknown"),
+      restarts: (($p.status.containerStatuses // []) | map(.restartCount // 0) | add // 0),
+      node: ($p.spec.nodeName // ""),
+      image: (($p.spec.containers // []) | map(.image) | .[0] // "")
+    }
+  ] |
+  group_by(.base) |
+  map({
+    name: .[0].base,
+    category: (if (.[0].ns == "kube-system") then "system" else .[0].ns end),
+    total: length,
+    ready: (map(select(.ready)) | length),
+    restarts: (map(.restarts) | add),
+    nodes: (map(.node) | unique),
+    image: .[0].image,
+    phase: (.[0].phase)
+  }) |
+  map({
+    name: .name,
+    category: .category,
+    status: (if .ready == .total then "Healthy" elif .ready > 0 then "Degraded" else "Unhealthy" end),
+    message: ("就绪 " + (.ready|tostring) + "/" + (.total|tostring)
+              + (if .restarts > 0 then " · 重启 " + (.restarts|tostring) + " 次" else "" end)
+              + (if (.nodes|length) > 0 then " · " + (.nodes|join(",")) else "" end))
+  })')"
+[ -z "$auto_comps" ] && auto_comps='[]'
+
+# 4) 控制面组件（合并到列表）
+cp_list="$(printf '[%s,%s,%s,%s]' \
+  "$(cp_probe 'kube-apiserver' '^kube-apiserver')" \
+  "$(cp_probe 'etcd' '^etcd')" \
+  "$(cp_probe 'kube-scheduler' '^kube-scheduler')" \
+  "$(cp_probe 'kube-controller-manager' '^kube-controller-manager')")"
+
+# 5) API Server 就绪状态作为一项独立组件
+api_comp="$(printf '{"name":"kube-apiserver-readyz","category":"control-plane","status":"%s","message":"%s"}' \
+  "$api_status" "$(if [ "$api_status" = "Healthy" ]; then echo "readyz 正常"; else echo "readyz 异常"; fi)")"
+
+# 6) 合并：自动发现 + 控制面 + readyz
+comps_json="$(jq -n -c --argjson auto "$auto_comps" --argjson cp "$cp_list" --argjson api "$api_comp" \
+  '($cp + [$api] + $auto) | unique_by(.name)')"
 [ -z "$comps_json" ] && comps_json='[]'
+
 
 # ---------- Pod 状态 ----------
 pods_json="$(kubectl get pods -A -o json 2>/dev/null | jq -c '

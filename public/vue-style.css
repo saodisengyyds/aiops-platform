@@ -594,7 +594,29 @@ body.login-mode #app {
 .node-gauges .ng { text-align: center; }
 .node-gauges .ng-k { font-size: 12.5px; color: var(--text-muted); margin-top: 6px; }
 
-.metrics-chart svg { width: 100%; height: 160px; display: block; background: #fafbfc; border-radius: 8px; }
+/* 图表容器：左侧纵轴 + 右侧绘图区 */
+.chart-body { display: flex; gap: 8px; align-items: stretch; }
+.chart-yaxis {
+  flex: 0 0 44px; height: 160px; position: relative;
+  font-size: 11px; color: #9ca3af; text-align: right;
+  padding: 0 2px; font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+/* 刻度绝对定位，与 metricLine 的 10px 上下留白对齐 */
+.chart-yaxis span {
+  position: absolute; right: 2px;
+  transform: translateY(-50%);
+}
+.chart-yaxis span:nth-child(1) { top: 10px; }    /* 100% */
+.chart-yaxis span:nth-child(2) { top: 45px; }    /* 75%  */
+.chart-yaxis span:nth-child(3) { top: 80px; }    /* 50%  */
+.chart-yaxis span:nth-child(4) { top: 115px; }   /* 25%  */
+.chart-yaxis span:nth-child(5) { top: 150px; }   /* 0%   */
+.chart-plot { flex: 1; min-width: 0; }
+.metrics-chart svg {
+  width: 100%; height: 160px; display: block;
+  background: #fafbfc; border-radius: 8px;
+}
 .chart-legend { display: flex; gap: 16px; justify-content: center; margin-top: 8px; font-size: 12.5px; color: var(--text-muted); }
 .chart-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
 

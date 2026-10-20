@@ -746,10 +746,31 @@ const App = {
       } catch (e) { ElMessage.warning('复制失败，请手动选择'); }
     }
     /** 节点指标趋势折线（viewBox 坐标） */
+    /* 图表纵轴上限：至少 100，超过则向上取整到 25 的倍数 */
+    const chartMax = computed(() => {
+      const d = nodeMetrics.value || [];
+      let mx = 100;
+      for (const m of d) {
+        for (const f of ['cpuUsage', 'memUsage', 'diskUsage']) {
+          const v = Number(m[f]) || 0;
+          if (v > mx) mx = v;
+        }
+      }
+      return Math.ceil(mx / 25) * 25;
+    });
+
+    /* 纵轴刻度：从上限到 0，5 等分 */
+    const chartTicks = computed(() => {
+      const mx = chartMax.value;
+      const out = [];
+      for (let i = 0; i < 5; i++) out.push(Math.round(mx - (mx / 4) * i));
+      return out;
+    });
+
     function metricLine(field, W, H) {
       const d = nodeMetrics.value;
       if (!d || d.length < 2) return '';
-      const max = Math.max(100, ...d.map((m) => Number(m[field]) || 0));
+      const max = chartMax.value;
       const step = W / (d.length - 1);
       return d.map((m, i) => {
         const v = Number(m[field]) || 0;
@@ -1870,7 +1891,7 @@ const App = {
       loadMonitor, loadNodes, resetNodeFilter, loadAlerts, resetAlertFilter, loadAlertRules,
       resolveAlert, openClusterCreate, openClusterEdit, saveCluster, removeCluster,
       openNodeDetail, openClusterComponents, openAlertRuleCreate, openAlertRuleEdit, saveAlertRule,
-      removeAlertRule, toggleRule, gotoAlertTicket, barColor, ruleSmallCatOptions, copyText, metricLine,
+      removeAlertRule, toggleRule, gotoAlertTicket, barColor, ruleSmallCatOptions, copyText, metricLine, chartMax, chartTicks,
       SEVERITY_TEXT, SEVERITY_TAG, ALERT_STATUS_TEXT, CLUSTER_STATUS_TEXT, CLUSTER_STATUS_TAG,
       NODE_STATUS_TAG, METRIC_OPTIONS,
       openTabs, closeTab,
@@ -3247,11 +3268,23 @@ const App = {
 
         <el-divider content-position="left">指标趋势（最近 {{ nodeMetrics.length }} 个采样点）</el-divider>
         <div v-if="nodeMetrics.length" class="metrics-chart">
-          <svg viewBox="0 0 600 160" preserveAspectRatio="none">
-            <polyline :points="metricLine('cpuUsage', 600, 160)" fill="none" stroke="#2563eb" stroke-width="2" />
-            <polyline :points="metricLine('memUsage', 600, 160)" fill="none" stroke="#16a34a" stroke-width="2" />
-            <polyline :points="metricLine('diskUsage', 600, 160)" fill="none" stroke="#f59e0b" stroke-width="2" />
-          </svg>
+          <div class="chart-body">
+            <!-- 纵轴：百分比刻度（HTML 层，避免 SVG 拉伸导致文字变形） -->
+            <div class="chart-yaxis">
+              <span v-for="t in chartTicks" :key="t">{{ t }}%</span>
+            </div>
+            <div class="chart-plot">
+              <svg viewBox="0 0 600 160" preserveAspectRatio="none">
+                <!-- 横向网格线 -->
+                <line v-for="y in [10, 45, 80, 115, 150]" :key="'g'+y"
+                      x1="0" :y1="y" x2="600" :y2="y"
+                      stroke="#e5e7eb" stroke-width="1" stroke-dasharray="3 3" vector-effect="non-scaling-stroke" />
+                <polyline :points="metricLine('cpuUsage', 600, 160)" fill="none" stroke="#2563eb" stroke-width="2" vector-effect="non-scaling-stroke" />
+                <polyline :points="metricLine('memUsage', 600, 160)" fill="none" stroke="#16a34a" stroke-width="2" vector-effect="non-scaling-stroke" />
+                <polyline :points="metricLine('diskUsage', 600, 160)" fill="none" stroke="#f59e0b" stroke-width="2" vector-effect="non-scaling-stroke" />
+              </svg>
+            </div>
+          </div>
           <div class="chart-legend">
             <span><i style="background:#2563eb"></i>CPU</span>
             <span><i style="background:#16a34a"></i>内存</span>
