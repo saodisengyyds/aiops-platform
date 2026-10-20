@@ -1956,7 +1956,6 @@ const App = {
       <header class="topbar">
         <el-button class="hamburger" text @click="sidebarOpen = !sidebarOpen"><el-icon><Fold /></el-icon></el-button>
         <div class="crumbs">
-          <span>{{ user.org || '中烟信息' }}</span><span>/</span>
           <span class="cur">{{ PAGE_TITLE[page] }}</span>
         </div>
         <div class="topbar-right">
