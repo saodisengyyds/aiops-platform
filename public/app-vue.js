@@ -746,8 +746,8 @@ const App = {
       } catch (e) { ElMessage.warning('复制失败，请手动选择'); }
     }
     /** 节点指标趋势折线（viewBox 坐标） */
-    /* 图表纵轴上限：至少 100，超过则向上取整到 25 的倍数 */
-    const chartMax = computed(() => {
+    /* 纵轴步长：保证 4 等分后刻度是整数（步长取 5 的倍数） */
+    const chartStep = computed(() => {
       const d = nodeMetrics.value || [];
       let mx = 100;
       for (const m of d) {
@@ -756,14 +756,17 @@ const App = {
           if (v > mx) mx = v;
         }
       }
-      return Math.ceil(mx / 25) * 25;
+      return Math.ceil(mx / 4 / 5) * 5;
     });
+
+    /* 纵轴上限 = 步长 × 4，保证顶部刻度正好落在绘图区顶端 */
+    const chartMax = computed(() => chartStep.value * 4);
 
     /* 纵轴刻度：从上限到 0，5 等分 */
     const chartTicks = computed(() => {
-      const mx = chartMax.value;
+      const st = chartStep.value;
       const out = [];
-      for (let i = 0; i < 5; i++) out.push(Math.round(mx - (mx / 4) * i));
+      for (let i = 0; i < 5; i++) out.push(chartMax.value - st * i);
       return out;
     });
 
@@ -1891,7 +1894,7 @@ const App = {
       loadMonitor, loadNodes, resetNodeFilter, loadAlerts, resetAlertFilter, loadAlertRules,
       resolveAlert, openClusterCreate, openClusterEdit, saveCluster, removeCluster,
       openNodeDetail, openClusterComponents, openAlertRuleCreate, openAlertRuleEdit, saveAlertRule,
-      removeAlertRule, toggleRule, gotoAlertTicket, barColor, ruleSmallCatOptions, copyText, metricLine, chartMax, chartTicks,
+      removeAlertRule, toggleRule, gotoAlertTicket, barColor, ruleSmallCatOptions, copyText, metricLine, chartMax, chartTicks, chartStep,
       SEVERITY_TEXT, SEVERITY_TAG, ALERT_STATUS_TEXT, CLUSTER_STATUS_TEXT, CLUSTER_STATUS_TAG,
       NODE_STATUS_TAG, METRIC_OPTIONS,
       openTabs, closeTab,

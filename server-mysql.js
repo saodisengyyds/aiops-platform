@@ -2518,7 +2518,10 @@ async function handleAgentReport(req, res, b) {
   }
 
   if (Array.isArray(b.components)) {
+    const seenComps = [];
     for (const c of b.components) {
+      if (!c || !c.name) continue;
+      seenComps.push(String(c.name));
       await pool.query(
         'INSERT INTO cluster_components (cluster_id, name, category, status, message, updated_at) VALUES (?,?,?,?,?,NOW()) ' +
         'ON DUPLICATE KEY UPDATE category=VALUES(category), status=VALUES(status), message=VALUES(message), updated_at=NOW()',
@@ -2535,6 +2538,33 @@ async function handleAgentReport(req, res, b) {
       } else if (exist.length) {
         await pool.query('UPDATE alerts SET status = "resolved", resolved_at = NOW() WHERE id = ?', [exist[0].id]);
         await notifyResolved(exist[0].id);
+      }
+    }
+
+    /* 清理本次未上报的组件（已下线/不再部署），并收敛其告警 */
+    if (seenComps.length) {
+      const ph = seenComps.map(() => '?').join(',');
+      const [gone] = await pool.query(
+        'SELECT name FROM cluster_components WHERE cluster_id = ? AND name NOT IN (' + ph + ')',
+        [cid, ...seenComps]
+      );
+      if (gone.length) {
+        await pool.query(
+          'DELETE FROM cluster_components WHERE cluster_id = ? AND name NOT IN (' + ph + ')',
+          [cid, ...seenComps]
+        );
+        for (const g of gone) {
+          try {
+            const [oa] = await pool.query(
+              'SELECT id FROM alerts WHERE cluster_id = ? AND target = ? AND metric = "component_status" AND status = "firing"',
+              [cid, g.name]
+            );
+            for (const a of oa) {
+              await pool.query('UPDATE alerts SET status = "resolved", resolved_at = NOW() WHERE id = ?', [a.id]);
+              await notifyResolved(a.id);
+            }
+          } catch (_) { /* ignore */ }
+        }
       }
     }
   }

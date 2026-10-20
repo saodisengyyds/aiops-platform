@@ -122,83 +122,86 @@ nodes_json="$(printf '%s' "$nodes_raw" | jq -c --argjson pc "$pod_map" --argjson
 api_status="Healthy"
 kubectl get --raw='/readyz' >/dev/null 2>&1 || api_status="Unhealthy"
 
-# 1) 控制面：优先按 Pod 名探测，静态 Pod/二进制部署则按端点判断
+# 采集 kube-system 全部 Pod（一次调用，后续复用）
+KS_JSON="$(kubectl get pods -n kube-system -o json 2>/dev/null || echo '{"items":[]}')"
+
+# 1) 控制面：按 Pod 名探测；未发现的直接跳过（不上报）
 cp_probe() {
   local name="$1" sel="$2"
-  local pods ready total
+  local pods total ready
   pods="$(printf '%s' "$KS_JSON" | jq -c --arg sel "$sel" '[.items[] | select(.metadata.name | test($sel))]' 2>/dev/null)"
   total="$(printf '%s' "$pods" | jq 'length' 2>/dev/null || echo 0)"
-  if [ "$total" -gt 0 ]; then
-    ready="$(printf '%s' "$pods" | jq '[.[] | select((.status.conditions // []) | map(select(.type == "Ready" and .status == "True")) | length > 0)] | length' 2>/dev/null || echo 0)"
-    if [ "$ready" = "$total" ]; then
-      printf '{"name":"%s","category":"control-plane","status":"Healthy","message":"就绪 %s/%s"}' "$name" "$ready" "$total"
-    else
-      printf '{"name":"%s","category":"control-plane","status":"Degraded","message":"就绪 %s/%s"}' "$name" "$ready" "$total"
-    fi
+  [ "$total" -eq 0 ] && return 0
+  ready="$(printf '%s' "$pods" | jq '[.[] | select((.status.conditions // []) | map(select(.type == "Ready" and .status == "True")) | length > 0)] | length' 2>/dev/null || echo 0)"
+  if [ "$ready" = "$total" ]; then
+    printf '{"name":"%s","category":"control-plane","status":"Healthy","message":"就绪 %s/%s"}' "$name" "$ready" "$total"
   else
-    printf '{"name":"%s","category":"control-plane","status":"NotFound","message":"未以 Pod 形式运行（静态 Pod / 二进制部署）"}' "$name"
+    printf '{"name":"%s","category":"control-plane","status":"Degraded","message":"就绪 %s/%s"}' "$name" "$ready" "$total"
   fi
 }
 
-# 2) 采集 kube-system 全部 Pod（一次调用，后续复用）
-KS_JSON="$(kubectl get pods -n kube-system -o json 2>/dev/null || echo '{"items":[]}')"
-
-# 3) 自动发现：kube-system 下所有工作负载（按 workload 名前缀聚合 Pod）
+# 2) 自动发现 kube-system 工作负载
+#    - 排除静态/镜像 Pod（annotation kubernetes.io/config.mirror），避免把控制面重复计入
+#    - ReplicaSet 名称去掉 -<hash> 后缀，还原 Deployment 名
+#    - 无 ownerReferences 的裸 Pod 也纳入（按 Pod 名）
 auto_comps="$(printf '%s' "$KS_JSON" | jq -c '
-  [ .items[] |
-    . as $p |
-    ($p.metadata.ownerReferences // []) as $own |
-    (if ($own | length) > 0 then
-       ($own[0].name | sub("-\\d+$"; ""))
-     else
-       ($p.metadata.name | sub("-[a-z0-9]{5,10}-[a-z0-9]{5}$"; "") | sub("-[a-z0-9]{5}$"; ""))
-     end) as $base |
-    { base: $base,
-      ns: $p.metadata.namespace,
-      name: $p.metadata.name,
-      ready: (([$p.status.conditions // [] | .[] | select(.type == "Ready" and .status == "True")] | length) > 0),
-      phase: ($p.status.phase // "Unknown"),
-      restarts: (($p.status.containerStatuses // []) | map(.restartCount // 0) | add // 0),
-      node: ($p.spec.nodeName // ""),
-      image: (($p.spec.containers // []) | map(.image) | .[0] // "")
-    }
-  ] |
-  group_by(.base) |
-  map({
-    name: .[0].base,
-    category: (if (.[0].ns == "kube-system") then "system" else .[0].ns end),
-    total: length,
-    ready: (map(select(.ready)) | length),
-    restarts: (map(.restarts) | add),
-    nodes: (map(.node) | unique),
-    image: .[0].image,
-    phase: (.[0].phase)
-  }) |
-  map({
-    name: .name,
-    category: .category,
-    status: (if .ready == .total then "Healthy" elif .ready > 0 then "Degraded" else "Unhealthy" end),
-    message: ("就绪 " + (.ready|tostring) + "/" + (.total|tostring)
-              + (if .restarts > 0 then " · 重启 " + (.restarts|tostring) + " 次" else "" end)
-              + (if (.nodes|length) > 0 then " · " + (.nodes|join(",")) else "" end))
-  })')"
+  [ .items[]
+    | select(((.metadata.annotations // {})["kubernetes.io/config.mirror"]) == null)
+    | . as $p
+    | ($p.metadata.ownerReferences // []) as $own
+    | (if ($own | length) > 0 then
+         ($own[0].name as $on
+          | if ($own[0].kind == "ReplicaSet") then ($on | sub("-[a-z0-9]{5,10}$"; ""))
+            else $on end)
+       else
+         ($p.metadata.name | sub("-[a-z0-9]{5,10}-[a-z0-9]{5}$"; "") | sub("-[a-z0-9]{5,10}$"; ""))
+       end) as $base
+    | {
+        base: $base,
+        ns: $p.metadata.namespace,
+        ready: (([$p.status.conditions // [] | .[] | select(.type == "Ready" and .status == "True")] | length) > 0),
+        restarts: (($p.status.containerStatuses // []) | map(.restartCount // 0) | add // 0),
+        node: ($p.spec.nodeName // "")
+      }
+  ]
+  | group_by(.base)
+  | map({
+      name: .[0].base,
+      category: "system",
+      total: length,
+      ready: (map(select(.ready)) | length),
+      restarts: (map(.restarts) | add),
+      nodes: (map(.node) | unique)
+    })
+  | map({
+      name: .name,
+      category: .category,
+      status: (if .ready == .total then "Healthy" elif .ready > 0 then "Degraded" else "Unhealthy" end),
+      message: ("就绪 " + (.ready|tostring) + "/" + (.total|tostring)
+                + (if .restarts > 0 then " · 重启 " + (.restarts|tostring) + " 次" else "" end)
+                + (if (.nodes|length) > 0 then " · " + (.nodes|join(",")) else "" end))
+    })')"
 [ -z "$auto_comps" ] && auto_comps='[]'
 
-# 4) 控制面组件（合并到列表）
-cp_list="$(printf '[%s,%s,%s,%s]' \
-  "$(cp_probe 'kube-apiserver' '^kube-apiserver')" \
-  "$(cp_probe 'etcd' '^etcd')" \
-  "$(cp_probe 'kube-scheduler' '^kube-scheduler')" \
-  "$(cp_probe 'kube-controller-manager' '^kube-controller-manager')")"
+# 3) 控制面（只收探测到的）
+cp_lines=""
+for pair in \
+  "kube-apiserver:^kube-apiserver-[^e]" \
+  "etcd:^etcd-" \
+  "kube-scheduler:^kube-scheduler-" \
+  "kube-controller-manager:^kube-controller-manager-"; do
+  nm="${pair%%:*}"; sel="${pair#*:}"
+  one="$(cp_probe "$nm" "$sel")"
+  [ -n "$one" ] && cp_lines="${cp_lines}${one}"$'\n'
+done
+cp_list="$(printf '%s' "$cp_lines" | jq -R -s -c 'split("\n") | map(select(length>0) | fromjson)')"
+[ -z "$cp_list" ] && cp_list='[]'
 
-# 5) API Server 就绪状态作为一项独立组件
-api_comp="$(printf '{"name":"kube-apiserver-readyz","category":"control-plane","status":"%s","message":"%s"}' \
-  "$api_status" "$(if [ "$api_status" = "Healthy" ]; then echo "readyz 正常"; else echo "readyz 异常"; fi)")"
-
-# 6) 合并：自动发现 + 控制面 + readyz
-comps_json="$(jq -n -c --argjson auto "$auto_comps" --argjson cp "$cp_list" --argjson api "$api_comp" \
-  '($cp + [$api] + $auto) | unique_by(.name)')"
+# 4) 合并（同名去重，控制面优先）
+comps_json="$(jq -n -c --argjson auto "$auto_comps" --argjson cp "$cp_list" \
+  '($cp + $auto) | unique_by(.name)')"
 [ -z "$comps_json" ] && comps_json='[]'
+
 
 
 # ---------- Pod 状态 ----------
