@@ -2543,11 +2543,34 @@ async function handleAgentReport(req, res, b) {
       }
     }
     /* 清理已不存在的 Pod；若上报为空数组，说明集群已无 Pod，全清 */
+    let vanished = [];
     if (seen.length) {
       const ph = seen.map(() => '?').join(',');
+      const [gone] = await pool.query(
+        'SELECT namespace, name FROM cluster_pods WHERE cluster_id = ? AND CONCAT(namespace, "/", name) NOT IN (' + ph + ')',
+        [cid, ...seen]
+      );
+      vanished = gone;
       await pool.query('DELETE FROM cluster_pods WHERE cluster_id = ? AND CONCAT(namespace, "/", name) NOT IN (' + ph + ')', [cid, ...seen]);
     } else {
+      const [gone] = await pool.query('SELECT namespace, name FROM cluster_pods WHERE cluster_id = ?', [cid]);
+      vanished = gone;
       await pool.query('DELETE FROM cluster_pods WHERE cluster_id = ?', [cid]);
+    }
+
+    /* Pod 消失（被删除/驱逐）时，其 firing 告警也应收敛，避免永久悬挂 */
+    for (const g of vanished) {
+      const t = g.namespace + '/' + g.name;
+      try {
+        const [orphan] = await pool.query(
+          'SELECT id FROM alerts WHERE cluster_id = ? AND target = ? AND metric = "pod_status" AND status = "firing"',
+          [cid, t]
+        );
+        for (const a of orphan) {
+          await pool.query('UPDATE alerts SET status = "resolved", resolved_at = NOW() WHERE id = ?', [a.id]);
+          await notifyResolved(a.id);
+        }
+      } catch (_) { /* ignore */ }
     }
   }
   alertsFired += podAlerts;
