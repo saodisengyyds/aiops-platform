@@ -686,6 +686,21 @@ const App = {
       } catch (e) { ElMessage.error(e.message); }
       installDialog.loading = false;
     }
+    /* 卸载命令文本（放这里，模板只做引用，避免转义陷阱） */
+    const uninstallBareCmd = computed(() => {
+      const base = (installDialog.platform || '').replace(/\/+$/, '');
+      return `curl -fsSL '${base}/api/agent/uninstall.sh' | sudo bash`;
+    });
+    const uninstallBareCheckCmd = computed(() => {
+      const base = (installDialog.platform || '').replace(/\/+$/, '');
+      return `curl -fsSL '${base}/api/agent/uninstall.sh' | sudo bash -s -- --check`;
+    });
+    const uninstallK8sCmd = computed(() => [
+      'kubectl delete namespace aiops-agent',
+      'kubectl delete clusterrolebinding aiops-agent-reader',
+      'kubectl delete clusterrole aiops-agent-reader',
+    ].join('\n'));
+
     function installTabContent() {
       if (installDialog.tab === 'onekey') return installDialog.oneLiner;
       if (installDialog.tab === 'script') return installDialog.installScript;
@@ -1878,7 +1893,7 @@ const App = {
       rulePage, rulePageSize, ruleTotalPages, pagedRules, onRuleSizeChange,
       tcPage, tcPageSize, tcTotalPages, pagedTicketCats, onTcSizeChange,
       menuPage, menuPageSize, menuTotalPages, pagedMenus, onMenuSizeChange,
-      installDialog, openInstallScript, installTabContent,
+      installDialog, openInstallScript, installTabContent, uninstallBareCmd, uninstallBareCheckCmd, uninstallK8sCmd,
       pods, pf, loadPods, resetPodFilter, podNamespaces, POD_STATUS_TAG, POD_ABNORMAL,
       notifyChannels, notifyLogs, notifyDialog, notifyTab, loadNotify, emptyNotify,
       openNotifyCreate, openNotifyEdit, saveNotify, removeNotify, toggleNotify, testNotify, onNotifyTypeChange,
@@ -3154,6 +3169,32 @@ const App = {
             <el-button type="primary" size="small" @click="copyText(installDialog.agentScript)">复制采集脚本</el-button>
           </div>
           <div class="install-hint">仅采集脚本本体（已内置集群标识与 Token），适合自行包装部署。</div>
+        </el-tab-pane>
+        <el-tab-pane label="卸载 Agent" name="uninstall">
+          <el-alert type="warning" :closable="false" show-icon style="margin-bottom:12px"
+                    title="卸载前请确认"
+                    description="卸载会停止采集服务并删除 /opt/aiops-agent，平台上的历史数据不受影响。" />
+
+          <el-divider content-position="left">裸机方式（systemd）</el-divider>
+          <div class="install-block">
+            <pre class="install-pre">{{ uninstallBareCmd }}</pre>
+            <el-button type="primary" size="small" @click="copyText(uninstallBareCmd)">复制卸载命令</el-button>
+          </div>
+          <div class="install-hint">
+            只想检查有没有残留，可先跑：<code>{{ uninstallBareCheckCmd }}</code><br/>
+            卸载脚本会：停止并禁用 timer / service → 删除 systemd 单元 → 清理残留进程 →
+            删除 <code>/opt/aiops-agent</code> → 逐项验证。无需平台可用，也无需 token。
+          </div>
+
+          <el-divider content-position="left">K8s 方式（CronJob）</el-divider>
+          <div class="install-block">
+            <pre class="install-pre">{{ uninstallK8sCmd }}</pre>
+            <el-button type="primary" size="small" @click="copyText(uninstallK8sCmd)">复制卸载命令</el-button>
+          </div>
+          <div class="install-hint">
+            删命名空间会连带删除 CronJob / ConfigMap / ServiceAccount；
+            ClusterRole 与 ClusterRoleBinding 是集群级资源，需单独删除。
+          </div>
         </el-tab-pane>
       </el-tabs>
       <el-descriptions :column="3" border size="small" style="margin-top:12px">
