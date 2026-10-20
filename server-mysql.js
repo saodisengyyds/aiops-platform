@@ -3271,15 +3271,17 @@ async function api(req, res, pathname, query) {
       const fi = Number((fiMap.get(c.id) || {}).fi || 0);
       if (nr || bp || bc || fi) unhealthy++; else healthy++;
     }
-    const [[{ nodes }]] = await pool.query('SELECT COUNT(*) AS nodes FROM cluster_nodes');
-    const [[{ notReady }]] = await pool.query('SELECT COUNT(*) AS notReady FROM cluster_nodes WHERE status <> "Ready"');
-    const [[{ firing }]] = await pool.query('SELECT COUNT(*) AS firing FROM alerts WHERE status = "firing"');
-    const [[{ urgent }]] = await pool.query('SELECT COUNT(*) AS urgent FROM alerts WHERE status = "firing" AND severity = "urgent"');
-    const [[{ avgCpu }]] = await pool.query('SELECT COALESCE(AVG(cpu_usage),0) AS avgCpu FROM cluster_nodes');
-    const [[{ avgMem }]] = await pool.query('SELECT COALESCE(AVG(mem_usage),0) AS avgMem FROM cluster_nodes');
-    const [[{ pods }]] = await pool.query('SELECT COUNT(*) AS pods FROM cluster_pods');
-    const [[{ badPods }]] = await pool.query("SELECT COUNT(*) AS badPods FROM cluster_pods WHERE status IN ('CrashLoopBackOff','Error','ImagePullBackOff','ErrImagePull','OOMKilled','Pending','Failed')");
-    const [[{ badComps }]] = await pool.query("SELECT COUNT(*) AS badComps FROM cluster_components WHERE status NOT IN ('Healthy','healthy','NotFound','notfound')");
+    /* 统计只计入现存集群，避免孤儿记录污染总数 */
+    const EX = 'cluster_id IN (SELECT id FROM clusters)';
+    const [[{ nodes }]] = await pool.query(`SELECT COUNT(*) AS nodes FROM cluster_nodes WHERE ${EX}`);
+    const [[{ notReady }]] = await pool.query(`SELECT COUNT(*) AS notReady FROM cluster_nodes WHERE status <> 'Ready' AND ${EX}`);
+    const [[{ firing }]] = await pool.query(`SELECT COUNT(*) AS firing FROM alerts WHERE status = 'firing' AND ${EX}`);
+    const [[{ urgent }]] = await pool.query(`SELECT COUNT(*) AS urgent FROM alerts WHERE status = 'firing' AND severity = 'urgent' AND ${EX}`);
+    const [[{ avgCpu }]] = await pool.query(`SELECT COALESCE(AVG(cpu_usage),0) AS avgCpu FROM cluster_nodes WHERE ${EX}`);
+    const [[{ avgMem }]] = await pool.query(`SELECT COALESCE(AVG(mem_usage),0) AS avgMem FROM cluster_nodes WHERE ${EX}`);
+    const [[{ pods }]] = await pool.query(`SELECT COUNT(*) AS pods FROM cluster_pods WHERE ${EX}`);
+    const [[{ badPods }]] = await pool.query(`SELECT COUNT(*) AS badPods FROM cluster_pods WHERE status IN ('CrashLoopBackOff','Error','ImagePullBackOff','ErrImagePull','OOMKilled','Pending','Failed') AND ${EX}`);
+    const [[{ badComps }]] = await pool.query(`SELECT COUNT(*) AS badComps FROM cluster_components WHERE status NOT IN ('Healthy','healthy','NotFound','notfound') AND ${EX}`);
     return sendJSON(res, 200, {
       clusters, healthy, unhealthy, unknownClusters, nodes, notReady, firing, urgent, pods, badPods, badComps,
       avgCpu: Number(avgCpu).toFixed(1), avgMem: Number(avgMem).toFixed(1),
@@ -4902,6 +4904,13 @@ async function ensureIndexes() {
     const [cols] = await pool.query("SHOW COLUMNS FROM sys_sessions LIKE 'last_active'");
     if (!cols.length) await pool.query('ALTER TABLE sys_sessions ADD COLUMN last_active DATETIME DEFAULT CURRENT_TIMESTAMP');
   } catch (_) { /* 表可能不存在，DDL 会建 */ }
+  /* 启动时清理孤儿记录（集群已删但子表残留） */
+  try {
+    for (const t of ['cluster_nodes', 'cluster_pods', 'cluster_components', 'node_metrics']) {
+      const [r] = await pool.query(`DELETE FROM ${t} WHERE cluster_id NOT IN (SELECT id FROM clusters)`);
+      if (r.affectedRows) console.log(`[CLEANUP] ${t}: 清理 ${r.affectedRows} 条孤儿记录`);
+    }
+  } catch (e) { console.log('[CLEANUP] 孤儿清理失败:', e.message); }
   await seedIfEmpty();
   await seedTicketCatsIfEmpty();
   await seedMonitorIfEmpty();
