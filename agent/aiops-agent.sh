@@ -37,10 +37,44 @@ pod_map="$(kubectl get pods -A -o json 2>/dev/null \
   | jq -c '[.items[] | select(.spec.nodeName != null)] | group_by(.spec.nodeName) | map({key: .[0].spec.nodeName, value: length}) | from_entries' 2>/dev/null)"
 [ -z "$pod_map" ] && pod_map='{}'
 
-# ---------- 节点资源使用率（需 metrics-server；缺失则为 0）----------
+# ---------- 节点资源使用率 ----------
+# A) kubectl top（需 metrics-server，口径最标准）
 top_raw="$(kubectl top nodes --no-headers 2>/dev/null || true)"
 top_map="$(printf '%s\n' "$top_raw" | awk 'NF>=5 { gsub("%","",$3); gsub("%","",$5); printf "%s\t%s\t%s\n", $1, $3, $5 }' \
   | jq -R -s -c 'split("\n") | map(select(length>0) | split("\t")) | map({key: .[0], value: {cpu: (.[1]|tonumber), mem: (.[2]|tonumber)}}) | from_entries' 2>/dev/null)"
+[ -z "$top_map" ] && top_map='{}'
+
+# B) 直读 kubelet /stats/summary（不依赖 metrics-server，且能拿到磁盘）
+stat_lines=""
+for nname in $(printf '%s' "$nodes_raw" | jq -r '.items[].metadata.name' 2>/dev/null); do
+  cap_cpu="$(printf '%s' "$nodes_raw" | jq -r --arg n "$nname" '.items[] | select(.metadata.name==$n) | .status.capacity.cpu // "0"' 2>/dev/null)"
+  st="$(kubectl get --raw "/api/v1/nodes/${nname}/proxy/stats/summary" 2>/dev/null || true)"
+  [ -z "$st" ] && continue
+  line="$(printf '%s' "$st" | jq -r --arg n "$nname" --arg cap "$cap_cpu" '
+    (.node // {}) as $nd |
+    ($cap | if test("m$") then ((rtrimstr("m")|tonumber)/1000) else (tonumber) end) as $cores |
+    (($nd.cpu.usageNanoCores // 0)|tonumber) as $nc |
+    (($nd.memory.workingSetBytes // 0)|tonumber) as $mu |
+    (($nd.memory.capacityBytes // 0)|tonumber) as $mc |
+    (($nd.fs.usedBytes // 0)|tonumber) as $du |
+    (($nd.fs.capacityBytes // 0)|tonumber) as $dc |
+    [ $n,
+      (if $cores > 0 then (($nc / ($cores * 1000000000)) * 100 | floor) else 0 end),
+      (if $mc > 0 then (($mu / $mc) * 100 | floor) else 0 end),
+      (if $dc > 0 then (($du / $dc) * 100 | floor) else 0 end)
+    ] | @tsv' 2>/dev/null)"
+  [ -n "$line" ] && stat_lines="${stat_lines}${line}
+"
+done
+
+stat_map='{}'
+if [ -n "$stat_lines" ]; then
+  stat_map="$(printf '%s' "$stat_lines" | jq -R -s -c 'split("\n") | map(select(length>0) | split("\t")) | map({key: .[0], value: {cpu: (.[1]|tonumber), mem: (.[2]|tonumber), disk: (.[3]|tonumber)}}) | from_entries' 2>/dev/null)"
+  [ -z "$stat_map" ] && stat_map='{}'
+fi
+
+# 合并：kubelet 打底，kubectl top 覆盖 cpu/mem（disk 保留 kubelet 的）
+top_map="$(jq -n -c --argjson a "$stat_map" --argjson b "$top_map" '$a * $b' 2>/dev/null)"
 [ -z "$top_map" ] && top_map='{}'
 
 # ---------- 组装 nodes ----------
@@ -67,7 +101,7 @@ nodes_json="$(printf '%s' "$nodes_raw" | jq -c --argjson pc "$pod_map" --argjson
       memTotalMb: ($mem | if test("Ki$") then ((rtrimstr("Ki") | tonumber) / 1024 | floor) elif test("Mi$") then (rtrimstr("Mi") | tonumber) elif test("Gi$") then ((rtrimstr("Gi") | tonumber) * 1024 | floor) else 0 end),
       cpuUsage: (($tm[$name].cpu) // 0),
       memUsage: (($tm[$name].mem) // 0),
-      diskUsage: 0,
+      diskUsage: (($tm[$name].disk) // 0),
       podCount: (($pc[$name]) // 0),
       load1: 0,
       conditions: $conds
