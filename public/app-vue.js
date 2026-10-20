@@ -2245,12 +2245,6 @@ const App = {
               <el-table-column label="触发时间" width="150">
                 <template #default="{ row }">{{ fmtDate(row.firedAt, true) }}</template>
               </el-table-column>
-              <el-table-column label="关联工单" width="150">
-                <template #default="{ row }">
-                  <el-button v-if="row.ticketId" link type="primary" size="small" @click.stop="gotoAlertTicket(row)">查看工单 #{{ row.ticketId }}</el-button>
-                  <span v-else style="color:#9ca3af;font-size:12px">—</span>
-                </template>
-              </el-table-column>
               <el-table-column label="操作" width="110" fixed="right">
                 <template #default="{ row }">
                   <el-button v-if="row.status === 'firing' && can('alert.manage')" link type="primary" size="small" @click.stop="resolveAlert(row)">标记恢复</el-button>
