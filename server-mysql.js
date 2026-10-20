@@ -110,30 +110,15 @@ const ROLE_SEED = {
 let ROLES = {};
 
 /** 菜单清单（含所属父级，用于前端渲染与权限配置） */
+/* 菜单清单：必须与前端 PAGES 保持一致，否则菜单可见性配置会出现幽灵项 */
 const MENUS = [
-  { key: 'dashboard', label: '首页', icon: 'HomeFilled', parent: null, perm: null },
-  { key: 'tickets', label: '工单管理', icon: 'Tickets', parent: null, perm: null },
-  { key: 'ticketcats', label: '事件分类', icon: 'Grid', parent: null, perm: 'ticket.category.manage' },
-  {
-    key: 'monitor', label: '集群监控', icon: 'Monitor', parent: null, perm: 'cluster.view',
-  },
+  { key: 'monitor', label: '集群监控', icon: 'Monitor', parent: null, perm: 'cluster.view' },
   { key: 'clusters', label: '集群总览', icon: 'Monitor', parent: 'monitor', perm: 'cluster.view' },
   { key: 'nodes', label: '节点监控', icon: 'Cpu', parent: 'monitor', perm: 'cluster.view' },
   { key: 'alerts', label: '告警中心', icon: 'BellFilled', parent: 'monitor', perm: 'alert.view' },
   { key: 'alertrules', label: '告警规则', icon: 'SetUp', parent: 'monitor', perm: 'alert.manage' },
   { key: 'notify', label: '通知渠道', icon: 'Bell', parent: 'monitor', perm: 'alert.manage' },
-  { key: 'assets', label: '资产管理', icon: 'Box', parent: null, perm: 'asset.view' },
-  { key: 'assets.list', label: '资产台账', icon: 'Box', parent: 'assets', perm: 'asset.view' },
-  { key: 'categories', label: '设备分类', icon: 'Grid', parent: 'assets', perm: 'model.view' },
-  { key: 'assetaudit', label: '资产审核', icon: 'DocumentChecked', parent: 'assets', perm: 'asset.audit' },
-  { key: 'models', label: '设备型号库', icon: 'Files', parent: 'assets', perm: 'model.view' },
-  { key: 'suppliers', label: '供应商管理', icon: 'OfficeBuilding', parent: 'assets', perm: 'supplier.view' },
-  { key: 'kb', label: '知识库管理', icon: 'Notebook', parent: null, perm: 'kb.view' },
-  { key: 'kbcat', label: '知识库分类', icon: 'Grid', parent: 'kb', perm: 'kb.category.manage' },
   { key: 'users', label: '用户与权限', icon: 'UserFilled', parent: null, perm: 'user.manage' },
-  { key: 'org', label: '组织与转派', icon: 'Share', parent: null, perm: 'group.manage' },
-  { key: 'menus', label: '菜单权限', icon: 'Menu', parent: null, perm: 'menu.manage' },
-  { key: 'audit', label: '操作日志', icon: 'Document', parent: null, perm: 'audit.view' },
 ];
 
 function rolePerms(role) {
