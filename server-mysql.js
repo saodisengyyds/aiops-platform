@@ -2525,7 +2525,8 @@ async function handleAgentReport(req, res, b) {
       await pool.query(
         'INSERT INTO cluster_components (cluster_id, name, category, status, message, updated_at) VALUES (?,?,?,?,?,NOW()) ' +
         'ON DUPLICATE KEY UPDATE category=VALUES(category), status=VALUES(status), message=VALUES(message), updated_at=NOW()',
-        [cid, c.name, c.category || 'control-plane', c.status || 'unknown', c.message || '']
+        [cid, c.name, c.category || 'control-plane', c.status || 'unknown',
+          String(c.message || '').slice(0, 255)]
       );
       /* NotFound = 该组件未部署（如 Calico 之外的 CNI），不算故障 */
       const bad = c.status && !['Healthy', 'healthy', 'NotFound', 'notfound'].includes(c.status);

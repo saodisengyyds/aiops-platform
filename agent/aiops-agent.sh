@@ -179,7 +179,11 @@ auto_comps="$(printf '%s' "$KS_JSON" | jq -c '
       status: (if .ready == .total then "Healthy" elif .ready > 0 then "Degraded" else "Unhealthy" end),
       message: ("就绪 " + (.ready|tostring) + "/" + (.total|tostring)
                 + (if .restarts > 0 then " · 重启 " + (.restarts|tostring) + " 次" else "" end)
-                + (if (.nodes|length) > 0 then " · " + (.nodes|join(",")) else "" end))
+                + (if (.nodes|length) > 3 then
+                     " · " + (.nodes[0:3] | join(",")) + " 等 " + (.nodes|length|tostring) + " 个节点"
+                   elif (.nodes|length) > 0 then
+                     " · " + (.nodes|join(","))
+                   else "" end))
     })')"
 [ -z "$auto_comps" ] && auto_comps='[]'
 
