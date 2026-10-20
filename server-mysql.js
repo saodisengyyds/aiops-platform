@@ -2701,6 +2701,17 @@ async function api(req, res, pathname, query) {
   }
 
   /* ---------- Agent 一键安装脚本（免登录，用 code+token 校验） ---------- */
+  /* ---------- Agent 卸载脚本（免鉴权：卸载不应依赖平台可用） ---------- */
+  if (group === 'agent' && method === 'GET' && idRaw === 'uninstall.sh') {
+    try {
+      const body = fs.readFileSync(path.join(ROOT, 'agent', 'uninstall-agent.sh'), 'utf8');
+      res.writeHead(200, { 'Content-Type': 'text/x-shellscript; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(body);
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      return res.end('# 卸载脚本读取失败: ' + e.message + '\n');
+    }
+  }
   if (group === 'agent' && method === 'GET' && idRaw === 'install-bare.sh') {
     const code = String(query.get('code') || '').trim();
     const token = String(query.get('tok' + 'en') || '').trim();
@@ -4871,7 +4882,21 @@ async function ensureIndexes() {
 
 (async () => {
   pool = mysql.createPool(DB_CFG);
-  for (const sql of DDL) await pool.query(sql);
+  /* DDL 逐条执行，单条失败不阻断启动（兼容旧库/残留表） */
+  let ddlFail = 0;
+  for (const sql of DDL) {
+    try {
+      await pool.query(sql);
+    } catch (e) {
+      ddlFail++;
+      const m = String(e.message || e);
+      /* 已存在类错误静默，其余提示 */
+      if (!/already exists|Duplicate/i.test(m)) {
+        console.warn('[DDL] 跳过:', m.slice(0, 160));
+      }
+    }
+  }
+  if (ddlFail) console.warn(`[DDL] 共 ${ddlFail} 条语句跳过（表可能已存在或结构冲突）`);
   // 第一梯队优化：核心表复合索引（幂等，已存在则跳过）
   await ensureIndexes();
   await loadSessions();
