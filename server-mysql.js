@@ -3744,7 +3744,7 @@ async function api(req, res, pathname, query) {
       }
       const [r] = await pool.query(
         'INSERT INTO sys_users (username, pwd, name, role, group_id, org, dept, phone, active) VALUES (?,?,?,?,?,?,?,?,?)',
-        [String(b.username).trim(), String(b.pwd || '123456'), String(b.name).trim(), b.role, gid, b.org || '中烟信息', b.dept || groupName(gid), b.phone || '', b.active === false ? 0 : 1]
+        [String(b.username).trim(), String(b.pwd || '123456'), String(b.name).trim(), b.role, gid, b.org || '', b.dept || '', b.phone || '', b.active === false ? 0 : 1]
       );
       const [rows] = await pool.query('SELECT * FROM sys_users WHERE id = ?', [r.insertId]);
       await audit(user, 'create', 'user', b.username, '新建用户 ' + b.name, req);

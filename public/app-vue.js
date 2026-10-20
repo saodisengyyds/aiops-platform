@@ -1270,24 +1270,24 @@ const App = {
     }
     function emptyUser() {
       const g = groups.value.find((x) => x.name === '业务用户组') || groups.value[0];
-      const s = suppliers.value[0];
       return {
         username: '', name: '', pwd: '123456', role: 'user',
         groupId: g ? g.id : null,
-        org: s ? s.name : '', orgId: s ? s.id : null,
         dept: '', phone: '', active: true,
       };
     }
-    function openUserCreate() { userDialog.mode = 'create'; userDialog.form = emptyUser(); userDialog.visible = true; }
-    /** 单位变更时，同步带出供应商 id（用于后续扩展） */
-    function onUserOrgChange(name) {
-      const s = suppliers.value.find((x) => x.name === name);
-      userDialog.form.orgId = s ? s.id : null;
+    function openUserCreate() {
+      userDialog.mode = 'create'; userDialog.form = emptyUser(); userDialog.visible = true;
+      /* 下拉数据源按需加载：分组/部门只在管理弹窗里加载过，直接开新建会显示「无数据」 */
+      if (!groups.value.length) loadGroups();
+      if (!departments.value.length) loadDepartments();
     }
     function openUserEdit(u) {
       userDialog.mode = 'edit';
       userDialog.form = Object.assign({}, u, { pwd: '' });
       userDialog.visible = true;
+      if (!groups.value.length) loadGroups();
+      if (!departments.value.length) loadDepartments();
     }
     async function saveUser() {
       const f = userDialog.form;
@@ -1874,7 +1874,6 @@ const App = {
       onBigCatChange, onMidCatChange, tcDialog, openTcCreate, openTcEdit, saveTc, removeTc,
       auditLogs, auditModules, lf, loadAudit, resetAuditFilter, AUDIT_ACTION, AUDIT_TAG, roleName,
       menuMatrix, loadMenuMatrix, toggleMenu,
-      onUserOrgChange,
       clusters, nodes, alerts, alertRules, monSummary, nodeMetrics, components, componentsDialog,
       clusterPodsDialog, openClusterPods,
       clusterPage, clusterPageSize, clusterTotalPages, pagedClusters, onClusterPageSizeChange, onClusterPageChange,
@@ -2432,7 +2431,6 @@ const App = {
                 </template>
               </el-table-column>
               <el-table-column prop="groupName" label="所属组" width="140" />
-              <el-table-column prop="org" label="单位" min-width="160" show-overflow-tooltip />
               <el-table-column prop="dept" label="部门" width="130" />
               <el-table-column prop="phone" label="联系方式" width="140" />
               <el-table-column label="状态" width="90">
@@ -2914,15 +2912,6 @@ const App = {
           <el-col :span="12"><el-form-item label="所属组">
             <el-select v-model="userDialog.form.groupId" style="width:100%" placeholder="请选择所属组">
               <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
-            </el-select>
-          </el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="所属单位">
-            <el-select v-model="userDialog.form.org" style="width:100%" filterable clearable placeholder="从供应商中选择"
-                       @change="onUserOrgChange">
-              <el-option v-for="s in suppliers" :key="s.id" :label="s.name" :value="s.name">
-                <span>{{ s.name }}</span>
-                <span style="float:right;color:#9ca3af;font-size:12px">{{ s.shortName }}</span>
-              </el-option>
             </el-select>
           </el-form-item></el-col>
           <el-col :span="12"><el-form-item label="部门">
